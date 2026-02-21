@@ -1,0 +1,49 @@
+export const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+export const USDC_DECIMALS = 6;
+
+// Additional deposit tokens
+export const USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+export const USDT_DECIMALS = 6;
+
+// Wrapped SOL mint (used for SOL deposits)
+export const WSOL_MINT = "So11111111111111111111111111111111111111112";
+export const SOL_DECIMALS = 9;
+
+export const JUPITER_QUOTE_API = "https://api.jup.ag/swap/v1/quote";
+export const JUPITER_SWAP_API = "https://api.jup.ag/swap/v1/swap-instructions";
+
+// Regional Jito endpoints — tried in order, fallback on rate limit
+export const JITO_BLOCK_ENGINE_URLS = [
+  "https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles",
+  "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles",
+  "https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles",
+  "https://slc.mainnet.block-engine.jito.wtf/api/v1/bundles",
+];
+
+export const JITO_TIP_ACCOUNTS = [
+  "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
+  "HFqU5x63VTqvQss8hp11i4bPYoZ8IDk6u6cnECkASbBP",
+  "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
+  "ADaUMid9yfUytqMBgopwjb2DTLSrRQDUSHi84CAS8jHe",
+  "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
+  "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
+  "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL6d33",
+  "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
+];
+
+export const PLATFORM_FEE_BPS = 10; // 0.1% fee
+export const DEFAULT_SLIPPAGE_BPS = 50; // 0.5% slippage
+export const MAX_ACCOUNTS_PER_SWAP = 20;
+export const JITO_TIP_LAMPORTS = 10_000; // 0.00001 SOL
+
+export const SOLANA_RPC_URL =
+  process.env.NEXT_PUBLIC_SOLANA_RPC_URL ||
+  "https://api.mainnet-beta.solana.com";
+
+// Fee collection wallet — replace with your actual wallet
+export const FEE_WALLET =
+  process.env.NEXT_PUBLIC_FEE_WALLET || "";
+
+// Jupiter API key — server-side only (used in /api/prices and jupiter.ts via server context)
+export const JUPITER_API_KEY =
+  process.env.JUPITER_API_KEY || process.env.NEXT_PUBLIC_JUPITER_API_KEY || "";

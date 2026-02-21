@@ -1,0 +1,222 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+}
+
+/* #54B226 = Vida Loca Green */
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.72 0.17 168);
+  --primary-foreground: oklch(0.09 0.03 155);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0.02 168);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.72 0.17 168);
+  --chart-1: oklch(0.72 0.17 168);
+  --chart-2: oklch(0.80 0.15 168);
+  --chart-3: oklch(0.62 0.15 168);
+  --chart-4: oklch(0.86 0.12 168);
+  --chart-5: oklch(0.50 0.12 168);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.72 0.17 168);
+  --sidebar-primary-foreground: oklch(0.09 0.03 155);
+  --sidebar-accent: oklch(0.97 0.02 168);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.72 0.17 168);
+}
+
+.dark {
+  /* Scheme A — Emerald Summit */
+  /* #0B0F14 */ --background: oklch(0.095 0.008 240);
+  /* #E6F2ED */ --foreground: oklch(0.935 0.012 160);
+  /* #10161C */ --card: oklch(0.110 0.009 230);
+  --card-foreground: oklch(0.935 0.012 160);
+  /* #0F151B */ --popover: oklch(0.103 0.009 230);
+  --popover-foreground: oklch(0.935 0.012 160);
+  /* #00C48C */ --primary: oklch(0.72 0.17 168);
+  /* #04110B */ --primary-foreground: oklch(0.09 0.03 155);
+  /* #10161C */ --secondary: oklch(0.110 0.009 230);
+  --secondary-foreground: oklch(0.935 0.012 160);
+  /* #10161C */ --muted: oklch(0.110 0.009 230);
+  /* #9FB8AD */ --muted-foreground: oklch(0.70 0.025 160);
+  /* accent-soft */ --accent: oklch(0.72 0.17 168 / 12%);
+  --accent-foreground: oklch(0.72 0.17 168);
+  --destructive: oklch(0.704 0.191 22.216);
+  /* #1F2A22 */ --border: oklch(0.20 0.018 155);
+  /* #1F2A22 */ --input: oklch(0.20 0.018 155);
+  /* #00C48C */ --ring: oklch(0.72 0.17 168);
+  --chart-1: oklch(0.72 0.17 168);
+  --chart-2: oklch(0.80 0.15 168);
+  --chart-3: oklch(0.62 0.15 168);
+  --chart-4: oklch(0.86 0.12 168);
+  --chart-5: oklch(0.50 0.12 168);
+  /* #0B0F14 */ --sidebar: oklch(0.095 0.008 240);
+  --sidebar-foreground: oklch(0.935 0.012 160);
+  --sidebar-primary: oklch(0.72 0.17 168);
+  --sidebar-primary-foreground: oklch(0.09 0.03 155);
+  --sidebar-accent: oklch(0.72 0.17 168 / 12%);
+  --sidebar-accent-foreground: oklch(0.72 0.17 168);
+  --sidebar-border: oklch(0.20 0.018 155);
+  --sidebar-ring: oklch(0.72 0.17 168);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    /* Titillium Web as the default for all body/UI text.
+       Use the raw Next.js font variables — @theme inline does NOT emit
+       its aliases as real CSS custom properties at runtime. */
+    font-family: var(--font-titillium-web), var(--font-geist-sans), sans-serif;
+  }
+  /* Space Grotesk: h1 and logo — display/hero role.
+     !important is required: in Tailwind v4, @layer utilities beats @layer base
+     for normal declarations. !important reverses this — @layer base !important
+     beats any non-important @layer utilities rule. */
+  h1 {
+    font-family: var(--font-space-grotesk), var(--font-geist-sans), sans-serif !important;
+  }
+  /* Titillium Web: all sub-headings and interactive elements.
+     Explicit rule ensures Tailwind utility classes on these elements
+     don't inherit a different font via the cascade. */
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  button,
+  [data-slot="button"] {
+    font-family: var(--font-titillium-web), var(--font-geist-sans), sans-serif;
+  }
+  /* Tabular nums on all monospace elements so financial columns don't jitter */
+  .font-mono {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: var(--font-koltav), var(--font-geist-sans), sans-serif;
+  }
+  /* Shared interactive button states — scale + brightness feedback */
+  .btn-interactive {
+    @apply active:scale-[0.97] active:brightness-90 transition-all cursor-pointer;
+  }
+}
+
+.nav-link {
+  font-size: 0.875rem;
+  color: var(--muted-foreground);
+  transition: color 0.15s;
+}
+.nav-link:hover {
+  color: var(--primary);
+}
+
+/* Hide number input spinner arrows */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+.landing-orb {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(54px);
+  opacity: 0.12;
+  pointer-events: none;
+  animation: landing-float 16s ease-in-out infinite;
+}
+
+.landing-orb-a {
+  width: 280px;
+  height: 280px;
+  top: 6%;
+  left: -90px;
+  background: radial-gradient(circle at 30% 30%, #00c48c, transparent 70%);
+}
+
+.landing-orb-b {
+  width: 320px;
+  height: 320px;
+  right: -120px;
+  bottom: 10%;
+  animation-duration: 20s;
+  background: radial-gradient(circle at 40% 40%, #6dd8b7, transparent 72%);
+}
+
+@keyframes landing-float {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, 12px, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
