@@ -23,7 +23,7 @@ import {
   FEE_WALLET,
   PLATFORM_FEE_BPS,
 } from "../constants";
-import { getMultipleQuotes, getSwapInstructions, JupiterQuoteResponse } from "./jupiter";
+import { getQuote, getMultipleQuotes, getSwapInstructions, JupiterQuoteResponse } from "./jupiter";
 import {
   buildSwapTransaction,
   buildJitoTipTransaction,
@@ -241,8 +241,11 @@ export async function executeBasketBuy(
   quotes: JupiterQuoteResponse[],
   feeAmount: number
 ): Promise<SwapResult> {
+  if (quotes.length === 0) {
+    return { success: false, error: "No quotes provided" };
+  }
   try {
-    const inputMint = quotes[0]?.inputMint ?? USDC_MINT;
+    const inputMint = quotes[0].inputMint;
     // Get swap instructions for each quote
     const swapInstructionSets = await Promise.all(
       quotes.map((quote) =>
@@ -273,16 +276,19 @@ export async function executeBasketBuy(
         txSignatures.push(sig);
       }
 
-      // Confirm the last transaction
-      const lastSig = txSignatures[txSignatures.length - 1];
-      const confirmation = await connection.confirmTransaction(
-        { signature: lastSig, blockhash, lastValidBlockHeight },
-        "confirmed"
+      // Confirm all transactions concurrently (swaps are independent)
+      const confirmations = await Promise.all(
+        txSignatures.map((sig) =>
+          connection.confirmTransaction(
+            { signature: sig, blockhash, lastValidBlockHeight },
+            "confirmed"
+          )
+        )
       );
-
-      if (confirmation.value.err) {
+      const failedIdx = confirmations.findIndex((c) => c.value.err);
+      if (failedIdx !== -1) {
         throw new Error(
-          `Transaction failed: ${JSON.stringify(confirmation.value.err)}`
+          `Transaction ${failedIdx + 1} failed: ${JSON.stringify(confirmations[failedIdx].value.err)}`
         );
       }
 
@@ -349,12 +355,8 @@ export async function executeBasketSell(
   try {
     const quotes = await Promise.all(
       sellAmounts
-        .filter((s) => BigInt(s.amount) > 0n)
-        .map((s) =>
-          import("./jupiter").then(({ getQuote }) =>
-            getQuote(s.inputMint, USDC_MINT, s.amount, slippageBps)
-          )
-        )
+        .filter((s) => { try { return BigInt(s.amount) > 0n; } catch { return false; } })
+        .map((s) => getQuote(s.inputMint, USDC_MINT, s.amount, slippageBps))
     );
 
     const swapInstructionSets = await Promise.all(
@@ -398,16 +400,19 @@ export async function executeBasketSell(
         txSignatures.push(sig);
       }
 
-      // Confirm the last transaction
-      const lastSig = txSignatures[txSignatures.length - 1];
-      const confirmation = await connection.confirmTransaction(
-        { signature: lastSig, blockhash, lastValidBlockHeight },
-        "confirmed"
+      // Confirm all transactions concurrently (swaps are independent)
+      const confirmations = await Promise.all(
+        txSignatures.map((sig) =>
+          connection.confirmTransaction(
+            { signature: sig, blockhash, lastValidBlockHeight },
+            "confirmed"
+          )
+        )
       );
-
-      if (confirmation.value.err) {
+      const failedIdx = confirmations.findIndex((c) => c.value.err);
+      if (failedIdx !== -1) {
         throw new Error(
-          `Transaction failed: ${JSON.stringify(confirmation.value.err)}`
+          `Transaction ${failedIdx + 1} failed: ${JSON.stringify(confirmations[failedIdx].value.err)}`
         );
       }
 

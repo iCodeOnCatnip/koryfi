@@ -46,4 +46,4 @@ export const FEE_WALLET =
 
 // Jupiter API key — server-side only (used in /api/prices and jupiter.ts via server context)
 export const JUPITER_API_KEY =
-  process.env.JUPITER_API_KEY || process.env.NEXT_PUBLIC_JUPITER_API_KEY || "";
+  process.env.JUPITER_API_KEY || "";

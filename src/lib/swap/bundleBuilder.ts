@@ -162,9 +162,13 @@ export async function pollBundleStatus(
   intervalMs: number = 2000
 ): Promise<{ status: "landed" | "failed"; slot?: number }> {
   for (let i = 0; i < maxRetries; i++) {
-    await new Promise((r) => setTimeout(r, intervalMs));
+    // Mild exponential backoff capped at 8s to detect fast failures early
+    const delay = Math.min(intervalMs * Math.pow(1.4, i), 8_000);
+    await new Promise((r) => setTimeout(r, delay));
 
     try {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 5_000);
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -174,7 +178,8 @@ export async function pollBundleStatus(
           method: "getBundleStatuses",
           params: [[bundleId]],
         }),
-      });
+        signal: controller.signal,
+      }).finally(() => clearTimeout(t));
 
       const result = await response.json();
       const statuses = result?.result?.value;

@@ -69,6 +69,19 @@ export function BridgeFab() {
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const hasOpened = useRef(false);
+  const fabAnchorRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const el = fabAnchorRef.current;
+    if (!el) return;
+    el.style.setProperty("position", "fixed", "important");
+    el.style.setProperty("right", "1.5rem", "important");
+    el.style.setProperty("bottom", "4rem", "important");
+    el.style.setProperty("left", "auto", "important");
+    el.style.setProperty("top", "auto", "important");
+    el.style.setProperty("transform", "none", "important");
+    el.style.setProperty("margin", "0", "important");
+  }, [open, loaded]);
 
   const handleOpen = () => {
     if (!hasOpened.current) {
@@ -81,28 +94,39 @@ export function BridgeFab() {
   return (
     <>
       {/* FAB Button — fixed bottom right */}
-      <button
-        onClick={handleOpen}
-        className="fixed bottom-6 right-6 z-50 h-10 px-4 rounded-full bg-primary text-primary-foreground text-sm font-medium shadow-lg shadow-primary/25 hover:bg-primary/90 active:scale-[0.97] active:brightness-90 transition-all flex items-center gap-2"
-      >
-        <svg
-          width="15"
-          height="15"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
+      <div ref={fabAnchorRef} className="z-50">
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={handleOpen}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              handleOpen();
+            }
+          }}
+          className="h-10 px-4 rounded-full bg-primary text-primary-foreground text-sm font-medium shadow-lg shadow-primary/25 hover:bg-primary/90 transition-colors flex items-center gap-2 cursor-pointer select-none"
+          style={{ transform: "none" }}
         >
-          <path d="M18 8h1a4 4 0 0 1 0 8h-1" />
-          <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z" />
-          <line x1="6" y1="1" x2="6" y2="4" />
-          <line x1="10" y1="1" x2="10" y2="4" />
-          <line x1="14" y1="1" x2="14" y2="4" />
-        </svg>
-        Bridge funds to Solana
-      </button>
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M18 8h1a4 4 0 0 1 0 8h-1" />
+            <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z" />
+            <line x1="6" y1="1" x2="6" y2="4" />
+            <line x1="10" y1="1" x2="10" y2="4" />
+            <line x1="14" y1="1" x2="14" y2="4" />
+          </svg>
+          Bridge funds to Solana
+        </div>
+      </div>
 
       {/* Bridge Widget Overlay — stays mounted once opened to preserve state */}
       {loaded && (
@@ -125,7 +149,7 @@ export function BridgeFab() {
               <h3 className="font-semibold">Bridge to Solana</h3>
               <button
                 onClick={() => setOpen(false)}
-                className="w-8 h-8 rounded-lg hover:bg-primary/10 active:scale-[0.97] active:brightness-90 flex items-center justify-center transition-all"
+                className="w-8 h-8 rounded-lg hover:bg-primary/10 active:scale-[0.97] active:brightness-90 flex items-center justify-center transition-all cursor-pointer"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="18" y1="6" x2="6" y2="18" />

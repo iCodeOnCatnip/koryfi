@@ -7,7 +7,7 @@ import { ConnectButton } from "@/components/wallet/ConnectButton";
 
 export function HeaderNav() {
   const pathname = usePathname();
-  const isLanding = pathname === "/landing";
+  const isLanding = pathname === "/";
 
   if (isLanding) {
     return (

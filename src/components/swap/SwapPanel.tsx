@@ -86,6 +86,7 @@ export function SwapPanel({
   }, [basket, weightMode, marketCapWeights, customWeights]);
 
   const amount = parseFloat(amountInput) || 0;
+  const isBusy = status === "signing" || status === "submitting";
 
   // Resolve mint for selected input asset
   const inputMint =
@@ -99,10 +100,14 @@ export function SwapPanel({
     inputMint
   );
 
+  const canInvest = amount > 0 && !previewLoading && !!preview && !isBusy;
+
   // Fetch balance for selected asset
   useEffect(() => {
     // Hide Max while loading a fresh balance for the newly selected asset
     setMaxBalance(null);
+
+    let cancelled = false;
 
     const fetchBalance = async () => {
       if (!wallet.publicKey) {
@@ -113,6 +118,7 @@ export function SwapPanel({
       try {
         if (inputAsset === "SOL") {
           const lamports = await connection.getBalance(wallet.publicKey);
+          if (cancelled) return;
           const sol = lamports / 1_000_000_000;
           const GAS_BUFFER_SOL = 0.02;
           const usable = Math.max(0, sol - GAS_BUFFER_SOL);
@@ -123,6 +129,7 @@ export function SwapPanel({
           const mintPk = new PublicKey(mint);
           const ata = await getAssociatedTokenAddress(mintPk, wallet.publicKey);
           const account = await connection.getTokenAccountBalance(ata).catch(() => null);
+          if (cancelled) return;
           if (!account) {
             setMaxBalance(0);
           } else {
@@ -130,12 +137,15 @@ export function SwapPanel({
             setMaxBalance(uiAmount);
           }
         }
-      } catch {
+      } catch (err) {
+        if (cancelled) return;
+        console.error("Balance fetch failed:", err);
         setMaxBalance(null);
       }
     };
 
     fetchBalance();
+    return () => { cancelled = true; };
   }, [wallet.publicKey, connection, inputAsset]);
 
   const toggleLock = useCallback((mint: string) => {
@@ -228,7 +238,7 @@ export function SwapPanel({
       setStatus("error");
       setErrorMsg(err instanceof Error ? err.message : "Unknown error");
     }
-  }, [wallet, preview, connection, basket, amount, activeWeights, tokenConfigByMint]);
+  }, [wallet, preview, connection, basket, activeWeights, prices]);
 
   // Only recomputed when disableMarketcap changes (i.e. almost never)
   const modes = useMemo<{ key: WeightMode; label: string }[]>(() => [
@@ -383,7 +393,7 @@ export function SwapPanel({
             placeholder="0.00"
             min="0"
             step="0.01"
-            className="w-full px-4 pr-28 py-3 rounded-lg border border-primary/20 bg-background text-lg font-mono focus:outline-none focus:ring-2 focus:ring-primary"
+            className="w-full px-4 pr-28 py-3 rounded-lg border border-primary/20 bg-background text-lg font-mono focus:outline-none focus:border-primary"
           />
           {/* Asset dropdown */}
           <button
@@ -484,9 +494,14 @@ export function SwapPanel({
         </div>
       ) : (
         <Button
-          className="w-full" size="lg"
-          disabled={amount <= 0 || previewLoading || !preview || status === "signing" || status === "submitting"}
-          onClick={handleInvest}
+          className={`w-full ${!canInvest && !isBusy ? "shake-on-press opacity-80" : ""}`}
+          size="lg"
+          disabled={isBusy}
+          aria-disabled={!canInvest}
+          onClick={() => {
+            if (!canInvest) return;
+            handleInvest();
+          }}
         >
           {status === "signing"
             ? "Signing transactions..."

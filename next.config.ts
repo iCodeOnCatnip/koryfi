@@ -10,6 +10,11 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+  // Bundle the pre-built chart cache into the /api/chart serverless function
+  // so Vercel serves warm data on every cold start.
+  outputFileTracingIncludes: {
+    "/api/chart": [".chart-cache/**/*"],
+  },
 };
 
 export default nextConfig;

@@ -51,3 +51,6 @@ nul
 
 # internal dev notes
 MEMORY_*.md
+
+# Claude Code internal tool config
+.claude/

@@ -153,6 +153,31 @@ interface TokenBalance {
   valueUsd: number;
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const output: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const current = nextIndex;
+      nextIndex += 1;
+      if (current >= items.length) return;
+      output[current] = await fn(items[current], current);
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.max(1, Math.min(limit, items.length)) },
+    () => worker()
+  );
+  await Promise.all(workers);
+  return output;
+}
+
 export default function PortfolioPage() {
   const { publicKey, signAllTransactions } = useWallet();
   const { connection } = useConnection();
@@ -171,22 +196,18 @@ export default function PortfolioPage() {
       new Map(allTokens.map((t) => [t.mint, t])).values()
     );
 
-    const results: TokenBalance[] = [];
-
-    for (const token of uniqueTokens) {
+    const results = await mapWithConcurrency(uniqueTokens, 8, async (token) => {
       try {
-        // SOL native balance
         if (token.mint === "So11111111111111111111111111111111111111112") {
           const bal = await connection.getBalance(publicKey);
           const solAmount = bal / 1e9;
-          results.push({
+          return {
             mint: token.mint,
             symbol: token.symbol,
             balance: solAmount,
             decimals: token.decimals,
             valueUsd: solAmount * (prices[token.mint] || 0),
-          });
-          continue;
+          };
         }
 
         const ata = getAssociatedTokenAddressSync(
@@ -194,26 +215,24 @@ export default function PortfolioPage() {
           publicKey
         );
         const accountInfo = await connection.getTokenAccountBalance(ata);
-        const amount =
-          Number(accountInfo.value.amount) / 10 ** token.decimals;
-        results.push({
+        const amount = Number(accountInfo.value.amount) / 10 ** token.decimals;
+        return {
           mint: token.mint,
           symbol: token.symbol,
           balance: amount,
           decimals: token.decimals,
           valueUsd: amount * (prices[token.mint] || 0),
-        });
+        };
       } catch {
-        // Token account doesn't exist — balance is 0
-        results.push({
+        return {
           mint: token.mint,
           symbol: token.symbol,
           balance: 0,
           decimals: token.decimals,
           valueUsd: 0,
-        });
+        };
       }
-    }
+    });
 
     setBalances(results);
     setLoading(false);

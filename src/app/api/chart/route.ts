@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { BASKETS } from "@/lib/baskets/config";
 import fs from "fs";
 import path from "path";
+import { enforceRateLimit } from "@/lib/server/security";
 
 /**
  * GET /api/chart?basket=sol-defi
@@ -20,6 +21,14 @@ import path from "path";
 
 const HERMES_BENCHMARK = "https://hermes.pyth.network/v2/updates/price";
 const CG_BASE = "https://api.coingecko.com/api/v3";
+const FETCH_TIMEOUT_MS = 15_000;
+const DAY_MS = 86_400_000;
+
+function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(t));
+}
 const CACHE_DIR = path.join(process.cwd(), ".chart-cache");
 const CHART_TTL = 86_400_000; // 24h
 
@@ -46,7 +55,26 @@ function writeCache(key: string, data: unknown) {
   try {
     ensureCacheDir();
     fs.writeFileSync(path.join(CACHE_DIR, `${key}.json`), JSON.stringify(data));
-  } catch {}
+  } catch (err) {
+    console.error(`Failed to write chart cache for ${key}:`, err);
+  }
+}
+
+function isStaleZeroTailCache(payload: unknown, pythMints: string[]): boolean {
+  if (pythMints.length === 0) return false;
+  if (!payload || typeof payload !== "object") return false;
+
+  const data = (payload as { data?: unknown }).data;
+  if (!Array.isArray(data) || data.length === 0) return false;
+
+  const tail = data.slice(-Math.min(7, data.length)) as Array<{ prices?: Record<string, number> }>;
+  // If any Pyth-tracked mint is all-zero across the recent tail, cache is bad.
+  return pythMints.some((mint) =>
+    tail.every((point) => {
+      const v = point?.prices?.[mint];
+      return typeof v === "number" && v <= 0;
+    })
+  );
 }
 
 // ── Pyth: fetch all tokens for a single day ────────────────────────
@@ -65,7 +93,7 @@ async function fetchPythDay(
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch(`${HERMES_BENCHMARK}/${timestamp}?${params}`);
+      const res = await fetchWithTimeout(`${HERMES_BENCHMARK}/${timestamp}?${params}`);
       if (res.status === 429) {
         await new Promise((r) => setTimeout(r, 5000 * (attempt + 1)));
         continue;
@@ -75,7 +103,7 @@ async function fetchPythDay(
       const data: { parsed: PythParsed[] } = await res.json();
       const prices: Record<string, number> = {};
       for (const p of data.parsed) {
-        prices[p.id] = Number(p.price.price) * 10 ** p.price.expo;
+        prices[p.id.replace("0x", "")] = Number(p.price.price) * 10 ** p.price.expo;
       }
       return prices;
     } catch {
@@ -93,7 +121,7 @@ async function fetchCoinGeckoChart(
   const url = `${CG_BASE}/coins/${encodeURIComponent(coingeckoId)}/market_chart?vs_currency=usd&days=${days}&interval=daily`;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      const res = await fetchWithTimeout(url, { headers: { Accept: "application/json" } });
       if (res.status === 429) {
         await new Promise((r) => setTimeout(r, 15_000 * (attempt + 1)));
         continue;
@@ -134,6 +162,9 @@ async function mapWithConcurrency<T, R>(
 
 // ── Main handler ───────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
+  const rateLimited = enforceRateLimit(req, "api:chart", 20, 60_000);
+  if (rateLimited) return rateLimited;
+
   const basketId = req.nextUrl.searchParams.get("basket");
   if (!basketId) {
     return NextResponse.json({ error: "Missing basket param" }, { status: 400 });
@@ -148,7 +179,8 @@ export async function GET(req: NextRequest) {
   // Cache key is safe: basket.id comes from the validated BASKETS config, not raw user input
   const cacheKey = `basket_${basket.id}`;
   const cached = readCache(cacheKey);
-  if (cached) {
+  const pythMints = basket.allocations.filter((a) => a.pythPriceId).map((a) => a.mint);
+  if (cached && !isStaleZeroTailCache(cached, pythMints)) {
     return NextResponse.json(cached);
   }
 
@@ -163,7 +195,7 @@ export async function GET(req: NextRequest) {
     const year = new Date().getUTCFullYear();
     const jan1Ms = Date.UTC(year, 0, 1); // midnight UTC Jan 1
     const nowMs = Date.now();
-    const days = Math.ceil((nowMs - jan1Ms) / 86400000);
+    const days = Math.ceil((nowMs - jan1Ms) / DAY_MS);
 
     // Split tokens: Pyth vs CoinGecko-only
     const pythTokens = basket.allocations.filter((a) => a.pythPriceId);
@@ -208,12 +240,19 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // ── Fetch CoinGecko for tokens without Pyth feeds ────────────────
+    // O(1) lookup maps for Pyth prices — replaces O(n) Array.findIndex in chartData loop
+    const mintPriceMaps = new Map<string, Map<number, number>>();
+    for (const t of pythTokens) {
+      mintPriceMaps.set(t.mint, new Map(mintPrices[t.mint]));
+    }
+
+    // ── Fetch CoinGecko only for tokens without Pyth feeds ───────────
     const cgPriceMaps: Record<string, Map<number, number>> = {};
-    for (const t of cgOnlyTokens) {
+    for (const t of basket.allocations) {
       cgPriceMaps[t.mint] = new Map();
     }
 
+    // Only request CG data for tokens that actually need it (no pythPriceId)
     await mapWithConcurrency(cgOnlyTokens, 2, async (t) => {
       const cgPrices = await fetchCoinGeckoChart(t.coingeckoId, days + 30);
       if (!cgPrices || cgPrices.length === 0) return;
@@ -228,14 +267,22 @@ export async function GET(req: NextRequest) {
       }
 
       const map = cgPriceMaps[t.mint];
-      for (const [ts, price] of src) map.set(ts, price);
+      for (const [ts, price] of src) {
+        map.set(ts, price);
+        map.set(Math.round(ts / DAY_MS) * DAY_MS, price);
+      }
 
       const fromJan1 = src.filter(([ts]) => {
-        const midnight = Math.round(ts / 86_400_000) * 86_400_000;
+        const midnight = Math.round(ts / DAY_MS) * DAY_MS;
         return midnight >= jan1Ms;
       });
       mintPrices[t.mint] = fromJan1.length > 0 ? fromJan1 : src;
     });
+
+    const cgSortedTs: Record<string, number[]> = {};
+    for (const t of basket.allocations) {
+      cgSortedTs[t.mint] = Array.from(cgPriceMaps[t.mint].keys()).sort((a, b) => a - b);
+    }
 
     // ── Build canonical timestamp set ─────────────────────────────────
     const canonicalTsSet = new Set<number>();
@@ -251,7 +298,7 @@ export async function GET(req: NextRequest) {
         const arr = mintPrices[t.mint];
         if (!arr) continue;
         for (const [ts] of arr) {
-          canonicalTsSet.add(Math.round(ts / 86_400_000) * 86_400_000);
+          canonicalTsSet.add(Math.round(ts / DAY_MS) * DAY_MS);
         }
       }
     }
@@ -263,26 +310,40 @@ export async function GET(req: NextRequest) {
       const map = cgPriceMaps[mint];
       if (!map || map.size === 0) return 0;
       if (map.has(tsMs)) return map.get(tsMs)!;
-      let best = 0;
-      let bestDiff = Infinity;
-      for (const [t, p] of map) {
-        const diff = Math.abs(t - tsMs);
-        if (diff < bestDiff) { bestDiff = diff; best = p; }
-      }
-      return best;
-    }
+      const rounded = Math.round(tsMs / DAY_MS) * DAY_MS;
+      if (map.has(rounded)) return map.get(rounded)!;
 
-    const cgMintSet = new Set(cgOnlyTokens.map((t) => t.mint));
+      const sorted = cgSortedTs[mint];
+      if (!sorted || sorted.length === 0) return 0;
+
+      let lo = 0;
+      let hi = sorted.length - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const v = sorted[mid];
+        if (v === tsMs) return map.get(v)!;
+        if (v < tsMs) lo = mid + 1;
+        else hi = mid - 1;
+      }
+
+      const left = hi >= 0 ? sorted[hi] : null;
+      const right = lo < sorted.length ? sorted[lo] : null;
+      if (left === null && right === null) return 0;
+      if (left === null) return map.get(right!) ?? 0;
+      if (right === null) return map.get(left) ?? 0;
+      return Math.abs(right - tsMs) < Math.abs(tsMs - left)
+        ? (map.get(right) ?? 0)
+        : (map.get(left) ?? 0);
+    }
 
     const chartData = canonicalTs.map((tsMs) => {
       const prices: Record<string, number> = {};
       for (const alloc of basket.allocations) {
-        if (cgMintSet.has(alloc.mint)) {
-          prices[alloc.mint] = lookupCgPrice(alloc.mint, tsMs);
+        if (alloc.pythPriceId) {
+          const pythPrice = mintPriceMaps.get(alloc.mint)?.get(tsMs) ?? 0;
+          prices[alloc.mint] = pythPrice > 0 ? pythPrice : lookupCgPrice(alloc.mint, tsMs);
         } else {
-          const arr = mintPrices[alloc.mint];
-          const idx = arr ? arr.findIndex(([t]) => t === tsMs) : -1;
-          prices[alloc.mint] = idx !== -1 ? arr[idx][1] : 0;
+          prices[alloc.mint] = lookupCgPrice(alloc.mint, tsMs);
         }
       }
       return { timestamp: tsMs, prices };

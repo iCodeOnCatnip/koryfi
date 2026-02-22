@@ -126,6 +126,43 @@ export function PerformanceChart({
     setHoverIndex(null);
   }, []);
 
+  // SVG geometry — must be before early returns (rules of hooks).
+  // Memoized so hover state changes don't retrigger O(n) path recomputation.
+  const chartGeometry = useMemo(() => {
+    if (chartData.length === 0) return null;
+    const values = chartData.map((d) => d.value);
+    const minVal = Math.min(...values) * 0.995;
+    const maxVal = Math.max(...values) * 1.005;
+    const range = maxVal - minVal || 1;
+    const width = 600;
+    const height = 140;
+    const padTop = 4;
+    const padBot = 4;
+    const chartH = height - padTop - padBot;
+    const getX = (i: number) => (i / (chartData.length - 1)) * width;
+    const getY = (val: number) => padTop + chartH - ((val - minVal) / range) * chartH;
+    const pathPoints = chartData.map((d, i) => `${getX(i)},${getY(d.value)}`);
+    const linePath = `M ${pathPoints.join(" L ")}`;
+    const areaPath = `${linePath} L ${width},${padTop + chartH} L 0,${padTop + chartH} Z`;
+    const dateLabels: { pct: string; label: string }[] = [];
+    for (let i = 0; i < 5; i++) {
+      const dataIdx = Math.round((i / 4) * (chartData.length - 1));
+      dateLabels.push({ pct: `${(i / 4) * 100}%`, label: formatDateShort(chartData[dataIdx].timestamp) });
+    }
+    return { width, height, padTop, chartH, getX, getY, linePath, areaPath, dateLabels };
+  }, [chartData]);
+
+  // Per-token performance — memoized so hover re-renders don't redo findIndex across all data points
+  const tokenPerf = useMemo(() => basket.allocations.map((alloc) => {
+    const w = weights?.[alloc.mint] ?? alloc.weight;
+    const firstIdx = data.findIndex((p) => p.prices[alloc.mint] && p.prices[alloc.mint] > 0);
+    const initialPrice = firstIdx !== -1 ? data[firstIdx].prices[alloc.mint] : undefined;
+    const finalPrice = data[data.length - 1]?.prices[alloc.mint];
+    const hasData = initialPrice && initialPrice > 0 && finalPrice && finalPrice > 0;
+    const change = hasData ? ((finalPrice / initialPrice) - 1) * 100 : null;
+    return { symbol: alloc.symbol, weight: w, change };
+  }), [data, weights, basket.allocations]);
+
   if (loading) {
     return (
       <div className="h-48 flex items-center justify-center text-muted-foreground text-sm">
@@ -137,7 +174,7 @@ export function PerformanceChart({
     );
   }
 
-  if (error || chartData.length === 0) {
+  if (error || !chartGeometry) {
     return (
       <div className="h-48 flex items-center justify-center text-muted-foreground text-sm">
         {error || "No price data available"}
@@ -145,11 +182,7 @@ export function PerformanceChart({
     );
   }
 
-  // Chart bounds
-  const values = chartData.map((d) => d.value);
-  const minVal = Math.min(...values) * 0.995;
-  const maxVal = Math.max(...values) * 1.005;
-  const range = maxVal - minVal || 1;
+  const { width, height, padTop, chartH, getX, getY, linePath, areaPath, dateLabels } = chartGeometry;
 
   const displayIndex = hoverIndex ?? chartData.length - 1;
   const currentValue = chartData[displayIndex].value;
@@ -158,46 +191,10 @@ export function PerformanceChart({
   const startDate = formatDate(chartData[0].timestamp);
   const endDate = formatDate(chartData[displayIndex].timestamp);
 
-  // SVG dimensions
-  const width = 600;
-  const height = 140;
-  const padTop = 4;
-  const padBot = 4;
-  const chartH = height - padTop - padBot;
-
-  const getX = (i: number) => (i / (chartData.length - 1)) * width;
-  const getY = (val: number) =>
-    padTop + chartH - ((val - minVal) / range) * chartH;
-
-  const pathPoints = chartData.map((d, i) => `${getX(i)},${getY(d.value)}`);
-  const linePath = `M ${pathPoints.join(" L ")}`;
-  const areaPath = `${linePath} L ${width},${padTop + chartH} L 0,${padTop + chartH} Z`;
-
-  // Date labels for below chart — 5 evenly spaced
-  const dateLabels: { pct: string; label: string }[] = [];
-  for (let i = 0; i < 5; i++) {
-    const dataIdx = Math.round((i / 4) * (chartData.length - 1));
-    dateLabels.push({
-      pct: `${(i / 4) * 100}%`,
-      label: formatDateShort(chartData[dataIdx].timestamp),
-    });
-  }
-
   // Hover position
   const hoverPct = hoverIndex !== null ? (hoverIndex / (chartData.length - 1)) * 100 : null;
   const hoverX = hoverIndex !== null ? getX(hoverIndex) : null;
   const hoverY = hoverIndex !== null ? getY(chartData[hoverIndex].value) : null;
-
-  // Per-token performance — use each token's first non-zero price as baseline
-  const tokenPerf = basket.allocations.map((alloc) => {
-    const w = weights?.[alloc.mint] ?? alloc.weight;
-    const firstIdx = data.findIndex((p) => p.prices[alloc.mint] && p.prices[alloc.mint] > 0);
-    const initialPrice = firstIdx !== -1 ? data[firstIdx].prices[alloc.mint] : undefined;
-    const finalPrice = data[data.length - 1]?.prices[alloc.mint];
-    const hasData = initialPrice && initialPrice > 0 && finalPrice && finalPrice > 0;
-    const change = hasData ? ((finalPrice / initialPrice) - 1) * 100 : null;
-    return { symbol: alloc.symbol, weight: w, change };
-  });
 
   return (
     <div className="space-y-3">

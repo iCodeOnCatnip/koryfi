@@ -1,24 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
+import { enforceRateLimit, isAllowedCoinGeckoId } from "@/lib/server/security";
 
 /**
  * GET /api/marketcap?ids=bitcoin,ethereum,solana
  *
  * Returns rounded market-cap weights (sum = 100) per coingeckoId.
- *
  * Cache policy: refresh once per week, on Monday.
- * - On every request, check if the cached data was fetched in the current Monday's window.
- * - If stale (fetched before this Monday 00:00:00 UTC), re-fetch from CoinGecko.
- * - Falls back to stale cache if CoinGecko is unavailable.
  */
 
 const CACHE_DIR = path.join(process.cwd(), ".chart-cache");
 const CACHE_FILE = path.join(CACHE_DIR, "marketcap-weights.json");
+const MAX_IDS_PER_REQUEST = 25;
 
 interface CacheEntry {
-  fetchedAt: number; // unix ms
-  weights: Record<string, Record<string, number>>; // idSet -> { id -> weight }
+  fetchedAt: number;
+  weights: Record<string, Record<string, number>>;
 }
 
 function ensureCacheDir() {
@@ -41,11 +39,10 @@ function writeCache(entry: CacheEntry) {
   } catch {}
 }
 
-/** Returns the Unix ms timestamp for the most recent Monday at 00:00:00 UTC */
 function lastMondayMidnightUTC(): number {
   const now = new Date();
-  const day = now.getUTCDay(); // 0=Sun, 1=Mon ... 6=Sat
-  const daysBack = day === 0 ? 6 : day - 1; // days since last Monday
+  const day = now.getUTCDay();
+  const daysBack = day === 0 ? 6 : day - 1;
   const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - daysBack));
   return monday.getTime();
 }
@@ -66,19 +63,27 @@ function computeWeights(idList: string[], capById: Record<string, number>): Reco
 }
 
 export async function GET(req: NextRequest) {
+  const rateLimited = enforceRateLimit(req, "api:marketcap", 30, 60_000);
+  if (rateLimited) return rateLimited;
+
   const ids = req.nextUrl.searchParams.get("ids");
   if (!ids) return NextResponse.json({ error: "Missing ids" }, { status: 400 });
 
-  const idList = ids.split(",").filter(Boolean).sort(); // sort for stable cache key
-  const cacheKey = idList.join(",");
+  const idList = Array.from(new Set(ids.split(",").map((id) => id.trim()).filter(Boolean))).sort();
+  if (idList.length === 0) return NextResponse.json({ error: "Missing ids" }, { status: 400 });
+  if (idList.length > MAX_IDS_PER_REQUEST) {
+    return NextResponse.json({ error: `Too many ids requested (max ${MAX_IDS_PER_REQUEST})` }, { status: 400 });
+  }
+  if (idList.some((id) => !isAllowedCoinGeckoId(id))) {
+    return NextResponse.json({ error: "Invalid or unsupported token id" }, { status: 400 });
+  }
 
-  // Check disk cache
+  const cacheKey = idList.join(",");
   const cached = readCache();
   if (cached && !isCacheStale(cached.fetchedAt) && cached.weights[cacheKey]) {
     return NextResponse.json({ weights: cached.weights[cacheKey], cached: true });
   }
 
-  // Fetch fresh from CoinGecko
   try {
     const res = await fetch(
       `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${cacheKey}&per_page=50`,
@@ -87,13 +92,17 @@ export async function GET(req: NextRequest) {
 
     if (!res.ok) throw new Error(`CoinGecko ${res.status}`);
 
-    const data: { id: string; market_cap: number }[] = await res.json();
+    const raw = await res.json();
+    if (!Array.isArray(raw)) throw new Error("Unexpected CoinGecko response shape");
     const capById: Record<string, number> = {};
-    for (const item of data) capById[item.id] = item.market_cap;
+    for (const item of raw) {
+      if (typeof item?.id === "string" && typeof item?.market_cap === "number") {
+        capById[item.id] = item.market_cap;
+      }
+    }
 
     const weights = computeWeights(idList, capById);
 
-    // Persist to cache (merge with existing keys)
     const existing = readCache();
     const newEntry: CacheEntry = {
       fetchedAt: Date.now(),
@@ -103,7 +112,6 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ weights, cached: false });
   } catch {
-    // CoinGecko unavailable — return stale cache if we have it
     if (cached?.weights[cacheKey]) {
       return NextResponse.json({ weights: cached.weights[cacheKey], cached: true, stale: true });
     }

@@ -188,14 +188,15 @@ function TxHistory({
   walletPubkey,
   basketId,
   basket,
+  prices,
 }: {
   walletPubkey: string | null;
   basketId: string;
   basket: BasketConfig;
+  prices: Record<string, number>;
 }) {
   const wallet = useWallet();
   const { connection } = useConnection();
-  const { prices } = usePrices();
 
   const [records, setRecords] = useState<PurchaseRecord[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -579,6 +580,7 @@ export default function BasketPage({
           walletPubkey={wallet.publicKey?.toString() ?? null}
           basketId={basket.id}
           basket={basket}
+          prices={prices}
         />
       </div>
 

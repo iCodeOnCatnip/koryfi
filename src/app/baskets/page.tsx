@@ -11,6 +11,7 @@ import { DEFAULT_SLIPPAGE_BPS, USDC_MINT } from "@/lib/constants";
 import { BasketCard } from "@/components/baskets/BasketCard";
 import { usePrices } from "@/hooks/usePrices";
 import { BridgeFab } from "@/components/bridge/BridgeFab";
+import { TourModal } from "@/components/TourModal";
 
 export default function Home() {
   const { prices, loading } = usePrices();
@@ -47,6 +48,7 @@ export default function Home() {
 
   return (
     <div className="space-y-10">
+      <TourModal ready={!loading} />
       {/* Tutorial / How It Works Banner */}
       <div
         className="relative px-6 py-5 overflow-hidden"
@@ -88,7 +90,7 @@ export default function Home() {
       {/* Available Baskets + redo last buy */}
       <div>
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-muted-foreground">
+          <h3 className="text-lg font-semibold text-white" style={{ fontFamily: "var(--font-space-grotesk)" }}>
             Available Baskets
           </h3>
           {wallet.publicKey && lastPurchase && lastBasket && (
@@ -114,7 +116,7 @@ export default function Home() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {BASKETS.map((basket) => (
-              <BasketCard key={basket.id} basket={basket} prices={prices} />
+              <BasketCard key={basket.id} basket={basket} />
             ))}
           </div>
         )}

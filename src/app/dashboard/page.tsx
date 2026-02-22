@@ -199,7 +199,7 @@ function PortfolioMetricsCard({
           <p className="text-xs uppercase tracking-widest text-muted-foreground mb-3">Wallet Balance</p>
           <p className="text-2xl md:text-3xl font-mono font-semibold text-muted-foreground leading-none">
             {walletBalance !== null ? fmtUsd(walletBalance) : (
-              <span className="text-muted-foreground text-2xl">Loadingâ€¦</span>
+              <span className="text-muted-foreground text-2xl">Loading...</span>
             )}
           </p>
         </div>
@@ -425,25 +425,37 @@ function InvestmentTransactionsHistory({ records }: { records: PurchaseRecord[] 
 function DepositHistoryTab() {
   const headers = ["Date", "Source Chain", "Amount", "Route", "Status", "Tx"];
   return (
-    <div className="rounded-xl border border-primary/10 overflow-hidden">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-primary/10" style={{ background: "rgba(0,196,140,0.04)" }}>
-            {headers.map((h) => (
-              <th key={h} className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-muted-foreground text-left">
-                {h}
-              </th>
+    <div className="relative rounded-xl border border-primary/10 overflow-hidden">
+      {/* Blurred table */}
+      <div className="blur-sm pointer-events-none select-none">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-primary/10" style={{ background: "rgba(0,196,140,0.04)" }}>
+              {headers.map((h) => (
+                <th key={h} className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-muted-foreground text-left">
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[...Array(4)].map((_, i) => (
+              <tr key={i} className="border-b border-primary/5">
+                {headers.map((h) => (
+                  <td key={h} className="px-4 py-3">
+                    <div className="h-3 rounded bg-primary/10 w-16" />
+                  </td>
+                ))}
+              </tr>
             ))}
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">
-              No deposit history yet.
-            </td>
-          </tr>
-        </tbody>
-      </table>
+          </tbody>
+        </table>
+      </div>
+      {/* Overlay */}
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+        <p className="text-sm font-medium text-foreground">Multichain management coming soon</p>
+        <p className="text-xs text-muted-foreground">Deposit history across chains will appear here</p>
+      </div>
     </div>
   );
 }
@@ -468,11 +480,13 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!wallet.publicKey) { setOnChainBalances(null); return; }
     const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
     fetch(`/api/balances?address=${wallet.publicKey.toString()}`, { signal: controller.signal })
       .then((r) => r.json())
       .then((data: { balances?: Record<string, number> }) => setOnChainBalances(data.balances ?? {}))
-      .catch((err) => { if (err.name !== "AbortError") setOnChainBalances({}); });
-    return () => controller.abort();
+      .catch((err) => { if (err.name !== "AbortError") setOnChainBalances({}); })
+      .finally(() => clearTimeout(timeout));
+    return () => { clearTimeout(timeout); controller.abort(); };
   }, [wallet.publicKey]);
 
   useEffect(() => {
@@ -487,13 +501,15 @@ export default function DashboardPage() {
     }
 
     const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
     fetch(`/api/prices?mints=${mints.join(",")}`, { signal: controller.signal })
       .then((r) => r.json())
       .then((data: { prices?: Record<string, number> }) =>
         setOnChainMintPrices(data.prices ?? {})
       )
-      .catch((err) => { if (err.name !== "AbortError") setOnChainMintPrices({}); });
-    return () => controller.abort();
+      .catch((err) => { if (err.name !== "AbortError") setOnChainMintPrices({}); })
+      .finally(() => clearTimeout(timeout));
+    return () => { clearTimeout(timeout); controller.abort(); };
   }, [onChainBalances]);
 
   const basketPositions = useMemo(

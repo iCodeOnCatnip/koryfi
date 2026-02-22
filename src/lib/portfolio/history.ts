@@ -43,7 +43,9 @@ export function getPurchaseRecords(walletPubkey: string): PurchaseRecord[] {
   const raw = localStorage.getItem(key);
   if (!raw) return [];
   try {
-    return (JSON.parse(raw) as unknown[]).map(migrateRecord);
+    return (JSON.parse(raw) as unknown[]).flatMap((r) => {
+      try { return [migrateRecord(r)]; } catch { return []; }
+    });
   } catch {
     return [];
   }

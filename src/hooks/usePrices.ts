@@ -4,33 +4,82 @@ import { useState, useEffect, useCallback } from "react";
 import { getTokenPrices } from "@/lib/prices/priceFeed";
 import { BASKETS } from "@/lib/baskets/config";
 
-const POLL_INTERVAL = 30_000; // 30s - Pyth is real-time, CoinGecko fallback cached 2 min server-side
+const POLL_INTERVAL = 30_000;
 
-export function usePrices() {
-  const [prices, setPrices] = useState<Record<string, number>>({});
-  const [loading, setLoading] = useState(true);
+const ALL_MINTS = Array.from(
+  new Set(BASKETS.flatMap((b) => b.allocations.map((a) => a.mint)))
+);
 
-  const allMints = Array.from(
-    new Set(BASKETS.flatMap((b) => b.allocations.map((a) => a.mint)))
-  );
+type PriceSnapshot = {
+  prices: Record<string, number>;
+  loading: boolean;
+};
 
-  const fetchPrices = useCallback(async () => {
+const subscribers = new Set<(snapshot: PriceSnapshot) => void>();
+let sharedPrices: Record<string, number> = {};
+let sharedLoading = true;
+let pollHandle: ReturnType<typeof setInterval> | null = null;
+let inFlight: Promise<void> | null = null;
+
+function emit() {
+  const snapshot = { prices: sharedPrices, loading: sharedLoading };
+  for (const sub of subscribers) sub(snapshot);
+}
+
+async function refreshPrices(): Promise<void> {
+  if (inFlight) return inFlight;
+
+  inFlight = (async () => {
     try {
-      const p = await getTokenPrices(allMints);
-      setPrices(p);
+      const nextPrices = await getTokenPrices(ALL_MINTS);
+      if (Object.keys(nextPrices).length > 0 || Object.keys(sharedPrices).length === 0) {
+        sharedPrices = nextPrices;
+      }
     } catch (err) {
       console.error("Failed to fetch prices:", err);
     } finally {
-      setLoading(false);
+      sharedLoading = false;
+      emit();
+      inFlight = null;
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  })();
+
+  return inFlight;
+}
+
+function ensurePolling() {
+  if (pollHandle) return;
+  void refreshPrices();
+  pollHandle = setInterval(() => {
+    void refreshPrices();
+  }, POLL_INTERVAL);
+}
+
+function maybeStopPolling() {
+  if (subscribers.size > 0 || !pollHandle) return;
+  clearInterval(pollHandle);
+  pollHandle = null;
+}
+
+export function usePrices() {
+  const [snapshot, setSnapshot] = useState<PriceSnapshot>({
+    prices: sharedPrices,
+    loading: sharedLoading,
+  });
 
   useEffect(() => {
-    fetchPrices();
-    const interval = setInterval(fetchPrices, POLL_INTERVAL);
-    return () => clearInterval(interval);
-  }, [fetchPrices]);
+    subscribers.add(setSnapshot);
+    ensurePolling();
 
-  return { prices, loading, refetch: fetchPrices };
+    return () => {
+      subscribers.delete(setSnapshot);
+      maybeStopPolling();
+    };
+  }, []);
+
+  const refetch = useCallback(async () => {
+    await refreshPrices();
+  }, []);
+
+  return { prices: snapshot.prices, loading: snapshot.loading, refetch };
 }
