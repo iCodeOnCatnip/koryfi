@@ -14,6 +14,13 @@ const HERMES_API = "https://hermes.pyth.network/v2/updates/price/latest";
 const JUPITER_PRICE_API = "https://api.jup.ag/price/v3/price";
 const COINGECKO_SIMPLE_API = "https://api.coingecko.com/api/v3/simple/price";
 const FETCH_TIMEOUT_MS = 10_000;
+const SOL_MINT = "So11111111111111111111111111111111111111112";
+const STAKED_SOL_MINTS = new Set([
+  "pSo1f9nQXWgXibFtKf7NWYxb5enAM4qfP6UJSiXRQfL", // pSOL
+  "he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A", // hSOL
+  "BonK1YhkXEGLZzwtcvRTip3gAL9nCeQD7ppZBLXhtTs", // bonkSOL
+]);
+const lastKnownPrices = new Map<string, number>();
 
 function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
@@ -153,6 +160,32 @@ export async function GET(req: NextRequest) {
   if (missing.length > 0) {
     const cg = await fetchCoinGeckoSimplePrices(missing);
     Object.assign(prices, cg);
+  }
+
+  // Proxy fallback for staked-SOL derivatives when providers temporarily fail.
+  const solProxy =
+    prices[SOL_MINT] ||
+    prices["mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So"] || // mSOL
+    prices["J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn"];   // jitoSOL
+  if (solProxy && solProxy > 0) {
+    for (const mint of mints) {
+      if (!prices[mint] && STAKED_SOL_MINTS.has(mint)) {
+        prices[mint] = solProxy;
+      }
+    }
+  }
+
+  // Last-known fallback for transient outages/rate limits.
+  for (const mint of mints) {
+    const current = prices[mint];
+    if (typeof current === "number" && current > 0) {
+      lastKnownPrices.set(mint, current);
+      continue;
+    }
+    const prev = lastKnownPrices.get(mint);
+    if (typeof prev === "number" && prev > 0) {
+      prices[mint] = prev;
+    }
   }
 
   return NextResponse.json({ prices });

@@ -169,8 +169,7 @@ function assembleBasket(
 ): { basketId: string; data: { timestamp: number; prices: Record<string, number> }[] } | null {
   const pythTokens = basket.allocations.filter((a) => a.pythPriceId);
   const cgOnlyTokens = basket.allocations.filter((a) => !a.pythPriceId);
-  const cgMintSet = new Set(cgOnlyTokens.map((t) => t.mint));
-
+  
   // Build canonical timestamp set
   const canonicalTsSet = new Set<number>();
   if (pythTokens.length > 0) {
@@ -212,12 +211,13 @@ function assembleBasket(
     const prices: Record<string, number> = {};
     const dayPrices = allPythPrices.get(tsMs); // O(1) Map lookup
     for (const alloc of basket.allocations) {
-      if (cgMintSet.has(alloc.mint)) {
-        prices[alloc.mint] = lookupCgPrice(alloc.mint, tsMs);
+      if (alloc.pythPriceId) {
+        const cleanId = alloc.pythPriceId.replace("0x", "");
+        const pythPrice = dayPrices?.get(cleanId) ?? 0;
+        prices[alloc.mint] =
+          pythPrice > 0 ? pythPrice : lookupCgPrice(alloc.mint, tsMs);
       } else {
-        // O(1) — Map instead of Array.findIndex
-        const cleanId = alloc.pythPriceId!.replace("0x", "");
-        prices[alloc.mint] = dayPrices?.get(cleanId) ?? 0;
+        prices[alloc.mint] = lookupCgPrice(alloc.mint, tsMs);
       }
     }
     return { timestamp: tsMs, prices };
@@ -259,7 +259,7 @@ async function main() {
   for (const basket of staleBaskets) {
     for (const alloc of basket.allocations) {
       if (alloc.pythPriceId) allPythIdSet.add(alloc.pythPriceId);
-      else cgMintToId.set(alloc.mint, alloc.coingeckoId);
+      cgMintToId.set(alloc.mint, alloc.coingeckoId);
     }
   }
 
@@ -349,4 +349,6 @@ main().catch((err) => {
   console.error("Prefetch failed:", err);
   process.exit(1);
 });
+
+
 

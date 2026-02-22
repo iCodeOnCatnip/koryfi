@@ -516,8 +516,8 @@ export async function GET(req: NextRequest) {
       cgPriceMaps[t.mint] = new Map();
     }
 
-    // Only request CG data for tokens that actually need it (no pythPriceId)
-    await mapWithConcurrency(cgOnlyTokens, 2, async (t) => {
+    // Request CG data for all tokens so pyth-gaps can fallback instead of going flat.
+    await mapWithConcurrency(basket.allocations, 2, async (t) => {
       const cgPrices = await fetchCoinGeckoChart(t.coingeckoId, days + 30);
       if (!cgPrices || cgPrices.length === 0) return;
 
@@ -540,7 +540,9 @@ export async function GET(req: NextRequest) {
         const midnight = Math.round(ts / DAY_MS) * DAY_MS;
         return midnight >= jan1Ms;
       });
-      mintPrices[t.mint] = fromJan1.length > 0 ? fromJan1 : src;
+      if (!t.pythPriceId) {
+        mintPrices[t.mint] = fromJan1.length > 0 ? fromJan1 : src;
+      }
     });
 
     const cgSortedTs: Record<string, number[]> = {};

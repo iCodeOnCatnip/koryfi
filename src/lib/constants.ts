@@ -9,8 +9,9 @@ export const USDT_DECIMALS = 6;
 export const WSOL_MINT = "So11111111111111111111111111111111111111112";
 export const SOL_DECIMALS = 9;
 
-export const JUPITER_QUOTE_API = "https://api.jup.ag/swap/v1/quote";
-export const JUPITER_SWAP_API = "https://api.jup.ag/swap/v1/swap-instructions";
+// Use lite-api for broader unauthenticated compatibility; avoids intermittent 401s.
+export const JUPITER_QUOTE_API = "https://lite-api.jup.ag/swap/v1/quote";
+export const JUPITER_SWAP_API = "https://lite-api.jup.ag/swap/v1/swap-instructions";
 
 // Regional Jito endpoints — tried in order, fallback on rate limit
 export const JITO_BLOCK_ENGINE_URLS = [
