@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { BASKETS } from "@/lib/baskets/config";
 import { enforceRateLimit } from "@/lib/server/security";
 
+export const dynamic = "force-dynamic";
+
 /**
  * GET /api/chart?basket=sol-defi
  *
@@ -29,15 +31,28 @@ function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
   const t = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(t));
 }
-const CHART_TTL = 86_400_000; // 24h
+const CHART_TTL_INTRADAY = 5 * 60_000; // 5m if today's point exists
+const CHART_TTL_HISTORICAL = 60 * 60_000; // 1h otherwise
 
 // ── In-memory cache ─────────────────────────────────────────────────
 const memCache = new Map<string, { data: unknown; ts: number }>();
 
+function payloadHasTodayPoint(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const data = (payload as { data?: unknown }).data;
+  if (!Array.isArray(data) || data.length === 0) return false;
+  const last = data[data.length - 1] as { timestamp?: unknown };
+  if (typeof last?.timestamp !== "number") return false;
+  const now = new Date();
+  const startOfTodayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  return last.timestamp >= startOfTodayUtc;
+}
+
 function readCache(key: string): unknown | null {
   const entry = memCache.get(key);
   if (!entry) return null;
-  if (Date.now() - entry.ts > CHART_TTL) {
+  const ttl = payloadHasTodayPoint(entry.data) ? CHART_TTL_INTRADAY : CHART_TTL_HISTORICAL;
+  if (Date.now() - entry.ts > ttl) {
     memCache.delete(key);
     return null;
   }
@@ -174,14 +189,18 @@ export async function GET(req: NextRequest) {
   const cached = readCache(cacheKey);
   const pythMints = basket.allocations.filter((a) => a.pythPriceId).map((a) => a.mint);
   if (cached && !isStaleZeroTailCache(cached, pythMints)) {
-    return NextResponse.json(cached);
+    return NextResponse.json(cached, {
+      headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
+    });
   }
 
   // Dedup concurrent requests for the same basket — register promise before
   // awaiting so all concurrent requests share the same fetch, then clean up.
   if (inFlight.has(cacheKey)) {
     const result = await inFlight.get(cacheKey)!;
-    return NextResponse.json(result);
+    return NextResponse.json(result, {
+      headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
+    });
   }
 
   const fetchPromise = (async () => {
@@ -361,5 +380,7 @@ export async function GET(req: NextRequest) {
   }
 
   writeCache(cacheKey, result);
-  return NextResponse.json(result);
+  return NextResponse.json(result, {
+    headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
+  });
 }

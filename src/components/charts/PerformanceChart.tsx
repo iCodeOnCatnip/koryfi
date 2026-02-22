@@ -14,7 +14,9 @@ interface PriceDataPoint {
  * Disk-cached for 24h on server — instant on repeat visits.
  */
 async function fetchBasketChart(basketId: string): Promise<PriceDataPoint[]> {
-  const res = await fetch(`/api/chart?basket=${encodeURIComponent(basketId)}`);
+  const res = await fetch(`/api/chart?basket=${encodeURIComponent(basketId)}`, {
+    cache: "no-store",
+  });
   if (!res.ok) throw new Error(`Failed to fetch chart: ${res.status}`);
   const json: { data: PriceDataPoint[] } = await res.json();
   return json.data;
