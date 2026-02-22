@@ -187,16 +187,21 @@ const inFlight = new Map<string, Promise<unknown>>();
 type ChartPoint = { timestamp: number; prices: Record<string, number> };
 type ChartPayload = { basketId: string; data: ChartPoint[] };
 
-function isStaleZeroTailCache(payload: unknown, pythMints: string[]): boolean {
-  if (pythMints.length === 0) return false;
-  if (!payload || typeof payload !== "object") return false;
+function isStaleCache(payload: unknown, allMints: string[], expectedDays: number): boolean {
+  if (!payload || typeof payload !== "object") return true;
 
   const data = (payload as { data?: unknown }).data;
-  if (!Array.isArray(data) || data.length === 0) return false;
+  if (!Array.isArray(data) || data.length === 0) return true;
 
+  // Reject if too few data points — indicates incomplete/aborted build fetch.
+  // Allow 5-day buffer for weekends, timezone edge cases, new baskets.
+  if (data.length < Math.max(1, expectedDays - 5)) return true;
+
+  // Reject if any tracked mint is all-zero across the recent 7-day tail.
+  // Applies to ALL mints (Pyth and CG-only) so sunrise/sol-staking are covered.
+  if (allMints.length === 0) return false;
   const tail = data.slice(-Math.min(7, data.length)) as Array<{ prices?: Record<string, number> }>;
-  // If any Pyth-tracked mint is all-zero across the recent tail, cache is bad.
-  return pythMints.some((mint) =>
+  return allMints.some((mint) =>
     tail.every((point) => {
       const v = point?.prices?.[mint];
       return typeof v === "number" && v <= 0;
@@ -401,7 +406,9 @@ function overlayLiveTail(
   const tailPoint: ChartPoint = { timestamp: now, prices: tailPrices };
   const data = payload.data.slice();
   const lastTs = latestHistorical.timestamp;
-  if (now - lastTs < DAY_MS / 2) {
+  // Only replace the last point if it's already a live/intraday point (< 2h old).
+  // Otherwise always append so we don't overwrite a valid historical daily close.
+  if (now - lastTs < 2 * 60 * 60_000) {
     data[data.length - 1] = tailPoint;
   } else {
     data.push(tailPoint);
@@ -428,24 +435,26 @@ export async function GET(req: NextRequest) {
   // Cache key is safe: basket.id comes from the validated BASKETS config, not raw user input
   const year = new Date().getUTCFullYear();
   const cacheKey = `basket_${basket.id}_${year}`;
-  const pythMints = basket.allocations.filter((a) => a.pythPriceId).map((a) => a.mint);
+  const allMints = basket.allocations.map((a) => a.mint);
+  const jan1Ms = Date.UTC(year, 0, 1);
+  const expectedDays = Math.ceil((Date.now() - jan1Ms) / DAY_MS);
 
-  // Prefer external shared cache first so all users/tabs see the same historical baseline.
-  const externalCached = await readUpstashCache(basket.id, year);
-  if (externalCached && !isStaleZeroTailCache(externalCached, pythMints)) {
-    writeCache(cacheKey, externalCached);
+  // ── 1. Memory/disk first (instant, no network) ──────────────────────
+  const cached = readCache(cacheKey, year, `basket_${basket.id}`);
+  if (cached && !isStaleCache(cached, allMints, expectedDays)) {
     const live = await fetchLatestPricesForBasket(basket.allocations);
-    const merged = overlayLiveTail(externalCached, basket.allocations, live);
+    const merged = overlayLiveTail(cached as ChartPayload, basket.allocations, live);
     return NextResponse.json(merged, {
       headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
     });
   }
 
-  // Local cache fallback (memory/disk) if shared cache is unavailable.
-  const cached = readCache(cacheKey, year, `basket_${basket.id}`);
-  if (cached && !isStaleZeroTailCache(cached, pythMints)) {
+  // ── 2. Upstash shared cache (serves all instances/cold-starts) ──────
+  const externalCached = await readUpstashCache(basket.id, year);
+  if (externalCached && !isStaleCache(externalCached, allMints, expectedDays)) {
+    writeCache(cacheKey, externalCached);
     const live = await fetchLatestPricesForBasket(basket.allocations);
-    const merged = overlayLiveTail(cached as ChartPayload, basket.allocations, live);
+    const merged = overlayLiveTail(externalCached, basket.allocations, live);
     return NextResponse.json(merged, {
       headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
     });
@@ -494,12 +503,22 @@ export async function GET(req: NextRequest) {
 
       for (const t of pythTokens) mintPrices[t.mint] = [];
 
-      for (const dayMap of pythDayPrices) {
-        const [tsStr, prices] = Object.entries(dayMap)[0];
-        const tsMs = Number(tsStr) * 1000;
+      // Sort day maps chronologically so forward-fill sees previous days first.
+      const sortedDayPrices = pythDayPrices
+        .map((m) => {
+          const [tsStr, prices] = Object.entries(m)[0];
+          return { tsMs: Number(tsStr) * 1000, prices };
+        })
+        .sort((a, b) => a.tsMs - b.tsMs);
+
+      const lastKnown: Record<string, number> = {};
+      for (const { tsMs, prices } of sortedDayPrices) {
         for (const t of pythTokens) {
           const cleanId = t.pythPriceId!.replace("0x", "");
-          mintPrices[t.mint].push([tsMs, prices[cleanId] ?? 0]);
+          const raw = prices[cleanId];
+          const price = typeof raw === "number" && raw > 0 ? raw : (lastKnown[t.mint] ?? 0);
+          if (price > 0) lastKnown[t.mint] = price;
+          mintPrices[t.mint].push([tsMs, price]);
         }
       }
     }
