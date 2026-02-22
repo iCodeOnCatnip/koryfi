@@ -46,6 +46,22 @@ function isFresh(key: string): boolean {
   }
 }
 
+async function isUpstashWarm(basketId: string, year: number): Promise<boolean> {
+  if (!UPSTASH_REDIS_REST_URL || !UPSTASH_REDIS_REST_TOKEN) return true; // no Upstash → disk-only is fine
+  try {
+    const key = `chart:${year}:${basketId}`;
+    const res = await fetch(
+      `${UPSTASH_REDIS_REST_URL}/exists/${encodeURIComponent(key)}`,
+      { headers: { Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}` } }
+    );
+    if (!res.ok) return false;
+    const json: { result: number } = await res.json();
+    return json.result === 1;
+  } catch {
+    return false;
+  }
+}
+
 function writeCache(key: string, data: unknown) {
   ensureCacheDir();
   fs.writeFileSync(path.join(CACHE_DIR, `${key}.json`), JSON.stringify(data));
@@ -207,18 +223,25 @@ function assembleBasket(
     return best;
   }
 
+  // Forward-fill state: carry last known good price per mint across days
+  const lastKnown: Record<string, number> = {};
+
   const chartData = canonicalTs.map((tsMs) => {
     const prices: Record<string, number> = {};
     const dayPrices = allPythPrices.get(tsMs); // O(1) Map lookup
     for (const alloc of basket.allocations) {
+      let price: number;
       if (alloc.pythPriceId) {
         const cleanId = alloc.pythPriceId.replace("0x", "");
         const pythPrice = dayPrices?.get(cleanId) ?? 0;
-        prices[alloc.mint] =
-          pythPrice > 0 ? pythPrice : lookupCgPrice(alloc.mint, tsMs);
+        price = pythPrice > 0 ? pythPrice : lookupCgPrice(alloc.mint, tsMs);
       } else {
-        prices[alloc.mint] = lookupCgPrice(alloc.mint, tsMs);
+        price = lookupCgPrice(alloc.mint, tsMs);
       }
+      // Forward-fill: if both Pyth and CG are zero, use last known good price
+      if (price <= 0 && lastKnown[alloc.mint]) price = lastKnown[alloc.mint];
+      if (price > 0) lastKnown[alloc.mint] = price;
+      prices[alloc.mint] = price;
     }
     return { timestamp: tsMs, prices };
   });
@@ -231,24 +254,30 @@ function assembleBasket(
 async function main() {
   console.log(`\nPrefetching chart data for ${BASKETS.length} baskets...\n`);
 
-  // 1. Skip baskets whose cache is still fresh
-  const staleBaskets = BASKETS.filter((b) => {
-    if (isFresh(`basket_${b.id}`)) {
-      console.log(`  [skip]  ${b.id} — cache is fresh`);
-      return false;
-    }
-    return true;
-  });
+  // 1. Time constants (needed by Upstash freshness check)
+  const year = new Date().getUTCFullYear();
+  const jan1Ms = Date.UTC(year, 0, 1);
+  const nowMs = Date.now();
+
+  // 2. Skip baskets whose cache is fresh in BOTH disk AND Upstash
+  const staleBaskets = (
+    await Promise.all(
+      BASKETS.map(async (b) => {
+        const diskFresh = isFresh(`basket_${b.id}`);
+        const upstashFresh = diskFresh ? await isUpstashWarm(b.id, year) : false;
+        if (diskFresh && upstashFresh) {
+          console.log(`  [skip]  ${b.id} — cache is fresh`);
+          return null;
+        }
+        return b;
+      })
+    )
+  ).filter((b): b is (typeof BASKETS)[0] => b !== null);
 
   if (staleBaskets.length === 0) {
     console.log("\nAll caches fresh — nothing to do.\n");
     return;
   }
-
-  // 2. Time constants (same for every basket)
-  const year = new Date().getUTCFullYear();
-  const jan1Ms = Date.UTC(year, 0, 1);
-  const nowMs = Date.now();
   const days = Math.ceil((nowMs - jan1Ms) / 86400000);
 
   // 3. Collect ALL unique Pyth feeds + CG tokens across stale baskets
