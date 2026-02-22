@@ -26,6 +26,9 @@ const HERMES_BENCHMARK = "https://hermes.pyth.network/v2/updates/price";
 const CG_BASE = "https://api.coingecko.com/api/v3";
 const CACHE_DIR = path.join(process.cwd(), ".chart-cache");
 const CHART_TTL = 86_400_000; // 24h — must match route.ts
+const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL?.replace(/\/+$/, "");
+const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const UPSTASH_TTL_SECONDS = 24 * 60 * 60;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -46,6 +49,30 @@ function isFresh(key: string): boolean {
 function writeCache(key: string, data: unknown) {
   ensureCacheDir();
   fs.writeFileSync(path.join(CACHE_DIR, `${key}.json`), JSON.stringify(data));
+}
+
+async function writeUpstashChart(
+  basketId: string,
+  year: number,
+  payload: unknown
+): Promise<void> {
+  if (!UPSTASH_REDIS_REST_URL || !UPSTASH_REDIS_REST_TOKEN) return;
+  try {
+    const key = `chart:${year}:${basketId}`;
+    await fetch(`${UPSTASH_REDIS_REST_URL}/pipeline`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify([
+        ["SET", key, JSON.stringify(payload), "EX", String(UPSTASH_TTL_SECONDS)],
+      ]),
+    });
+  } catch {
+    // non-fatal during prebuild
+  }
 }
 
 // ── Pyth ─────────────────────────────────────────────────────────────────────
@@ -309,6 +336,8 @@ async function main() {
         return;
       }
       writeCache(`basket_${basket.id}`, result);
+      writeCache(`basket_${basket.id}_${year}`, result);
+      await writeUpstashChart(basket.id, year, result);
       console.log(`  [done]  ${basket.id} — ${result.data.length} data points`);
     })
   );
@@ -320,3 +349,4 @@ main().catch((err) => {
   console.error("Prefetch failed:", err);
   process.exit(1);
 });
+

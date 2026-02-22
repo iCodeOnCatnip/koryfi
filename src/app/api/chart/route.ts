@@ -428,22 +428,24 @@ export async function GET(req: NextRequest) {
   // Cache key is safe: basket.id comes from the validated BASKETS config, not raw user input
   const year = new Date().getUTCFullYear();
   const cacheKey = `basket_${basket.id}_${year}`;
-  const cached = readCache(cacheKey, year, `basket_${basket.id}`);
   const pythMints = basket.allocations.filter((a) => a.pythPriceId).map((a) => a.mint);
-  if (cached && !isStaleZeroTailCache(cached, pythMints)) {
-    const live = await fetchLatestPricesForBasket(basket.allocations);
-    const merged = overlayLiveTail(cached as ChartPayload, basket.allocations, live);
-    return NextResponse.json(merged, {
-      headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
-    });
-  }
 
-  // Optional external cache layer (Upstash Redis) for instant cold-start loads
+  // Prefer external shared cache first so all users/tabs see the same historical baseline.
   const externalCached = await readUpstashCache(basket.id, year);
   if (externalCached && !isStaleZeroTailCache(externalCached, pythMints)) {
     writeCache(cacheKey, externalCached);
     const live = await fetchLatestPricesForBasket(basket.allocations);
     const merged = overlayLiveTail(externalCached, basket.allocations, live);
+    return NextResponse.json(merged, {
+      headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
+    });
+  }
+
+  // Local cache fallback (memory/disk) if shared cache is unavailable.
+  const cached = readCache(cacheKey, year, `basket_${basket.id}`);
+  if (cached && !isStaleZeroTailCache(cached, pythMints)) {
+    const live = await fetchLatestPricesForBasket(basket.allocations);
+    const merged = overlayLiveTail(cached as ChartPayload, basket.allocations, live);
     return NextResponse.json(merged, {
       headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
     });
