@@ -8,17 +8,41 @@ interface PriceDataPoint {
   prices: Record<string, number>; // mint -> USD price
 }
 
+const CLIENT_CACHE_TTL = 30 * 60 * 1000; // 30 min — daily closes don't change intraday
+
+function readClientCache(basketId: string): PriceDataPoint[] | null {
+  try {
+    const raw = sessionStorage.getItem(`chart_${basketId}`);
+    if (!raw) return null;
+    const { data, ts } = JSON.parse(raw) as { data: PriceDataPoint[]; ts: number };
+    if (Date.now() - ts > CLIENT_CACHE_TTL) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function writeClientCache(basketId: string, data: PriceDataPoint[]) {
+  try {
+    sessionStorage.setItem(`chart_${basketId}`, JSON.stringify({ data, ts: Date.now() }));
+  } catch {
+    // ignore if sessionStorage is full or unavailable
+  }
+}
+
 /**
  * Fetch complete basket chart data from server in ONE call.
- * Server uses Pyth Benchmarks (fast, batched) + CoinGecko fallback for non-Pyth tokens.
- * Disk-cached for 24h on server — instant on repeat visits.
+ * Client-side: sessionStorage cache (30 min TTL) for instant tab-switching.
+ * Server-side: CDN-cached (5 min) + Upstash + disk — no live fetch delay on cache hit.
  */
 async function fetchBasketChart(basketId: string): Promise<PriceDataPoint[]> {
-  const res = await fetch(`/api/chart?basket=${encodeURIComponent(basketId)}`, {
-    cache: "no-store",
-  });
+  const cached = readClientCache(basketId);
+  if (cached) return cached;
+
+  const res = await fetch(`/api/chart?basket=${encodeURIComponent(basketId)}`);
   if (!res.ok) throw new Error(`Failed to fetch chart: ${res.status}`);
   const json: { data: PriceDataPoint[] } = await res.json();
+  writeClientCache(basketId, json.data);
   return json.data;
 }
 

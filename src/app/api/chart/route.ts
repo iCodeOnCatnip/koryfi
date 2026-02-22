@@ -439,14 +439,16 @@ export async function GET(req: NextRequest) {
   const jan1Ms = Date.UTC(year, 0, 1);
   const expectedDays = Math.ceil((Date.now() - jan1Ms) / DAY_MS);
 
+  // CDN cache header for pre-warmed responses: serve instantly from Vercel edge for 5 min,
+  // then revalidate in background. Historical daily closes don't change intraday.
+  const CDN_HEADERS = { "Cache-Control": "public, s-maxage=300, stale-while-revalidate=86400" };
+
   // ── 1. Memory/disk first (instant, no network) ──────────────────────
   const cached = readCache(cacheKey, year, `basket_${basket.id}`);
   if (cached && !isStaleCache(cached, allMints, expectedDays)) {
     const live = await fetchLatestPricesForBasket(basket.allocations);
     const merged = overlayLiveTail(cached as ChartPayload, basket.allocations, live);
-    return NextResponse.json(merged, {
-      headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
-    });
+    return NextResponse.json(merged, { headers: CDN_HEADERS });
   }
 
   // ── 2. Upstash shared cache (serves all instances/cold-starts) ──────
@@ -455,9 +457,7 @@ export async function GET(req: NextRequest) {
     writeCache(cacheKey, externalCached);
     const live = await fetchLatestPricesForBasket(basket.allocations);
     const merged = overlayLiveTail(externalCached, basket.allocations, live);
-    return NextResponse.json(merged, {
-      headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
-    });
+    return NextResponse.json(merged, { headers: CDN_HEADERS });
   }
 
   // Dedup concurrent requests for the same basket — register promise before
@@ -657,7 +657,8 @@ export async function GET(req: NextRequest) {
   await writeUpstashCache(basket.id, year, historical);
   const live = await fetchLatestPricesForBasket(basket.allocations);
   const merged = overlayLiveTail(historical, basket.allocations, live);
+  // Fresh live fetch — short CDN TTL so next request also gets live tail
   return NextResponse.json(merged, {
-    headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
+    headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" },
   });
 }
