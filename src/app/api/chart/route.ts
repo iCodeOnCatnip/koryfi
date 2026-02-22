@@ -22,7 +22,9 @@ export const dynamic = "force-dynamic";
  */
 
 const HERMES_BENCHMARK = "https://hermes.pyth.network/v2/updates/price";
+const HERMES_LATEST = "https://hermes.pyth.network/v2/updates/price/latest";
 const CG_BASE = "https://api.coingecko.com/api/v3";
+const JUPITER_PRICE_API = "https://api.jup.ag/price/v3/price";
 const FETCH_TIMEOUT_MS = 15_000;
 const DAY_MS = 86_400_000;
 
@@ -31,8 +33,8 @@ function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
   const t = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(t));
 }
-const CHART_TTL_INTRADAY = 5 * 60_000; // 5m if today's point exists
-const CHART_TTL_HISTORICAL = 60 * 60_000; // 1h otherwise
+const CHART_TTL_INTRADAY = 24 * 60 * 60_000; // 24h if today's point exists
+const CHART_TTL_HISTORICAL = 24 * 60 * 60_000; // 24h otherwise
 
 // ── In-memory cache ─────────────────────────────────────────────────
 const memCache = new Map<string, { data: unknown; ts: number }>();
@@ -65,6 +67,9 @@ function writeCache(key: string, data: unknown) {
 
 // In-flight dedup: prevents concurrent requests from triggering duplicate fetches
 const inFlight = new Map<string, Promise<unknown>>();
+
+type ChartPoint = { timestamp: number; prices: Record<string, number> };
+type ChartPayload = { basketId: string; data: ChartPoint[] };
 
 function isStaleZeroTailCache(payload: unknown, pythMints: string[]): boolean {
   if (pythMints.length === 0) return false;
@@ -168,6 +173,97 @@ async function mapWithConcurrency<T, R>(
   return output;
 }
 
+async function fetchLatestPricesForBasket(
+  allocations: { mint: string; pythPriceId?: string }[]
+): Promise<Record<string, number>> {
+  const prices: Record<string, number> = {};
+
+  // 1) Pyth latest for tracked mints (single request)
+  const pythIds = allocations.map((a) => a.pythPriceId).filter((id): id is string => !!id);
+  const pythToMint = new Map<string, string>();
+  for (const a of allocations) {
+    if (a.pythPriceId) pythToMint.set(a.pythPriceId.replace("0x", ""), a.mint);
+  }
+
+  if (pythIds.length > 0) {
+    try {
+      const params = new URLSearchParams();
+      for (const id of pythIds) params.append("ids[]", id);
+      const res = await fetchWithTimeout(`${HERMES_LATEST}?${params}`);
+      if (res.ok) {
+        const data: { parsed?: { id: string; price: { price: string; expo: number } }[] } = await res.json();
+        for (const p of data.parsed ?? []) {
+          const mint = pythToMint.get(p.id.replace("0x", ""));
+          if (!mint) continue;
+          const v = Number(p.price.price) * Math.pow(10, p.price.expo);
+          if (Number.isFinite(v) && v > 0) prices[mint] = v;
+        }
+      }
+    } catch {
+      // fall through to Jupiter for missing mints
+    }
+  }
+
+  // 2) Jupiter fallback for anything still missing
+  const missing = allocations.map((a) => a.mint).filter((mint) => !(mint in prices));
+  if (missing.length > 0) {
+    try {
+      const headers: Record<string, string> = { Accept: "application/json" };
+      const apiKey = process.env.JUPITER_API_KEY;
+      if (apiKey) headers["x-api-key"] = apiKey;
+      const res = await fetchWithTimeout(`${JUPITER_PRICE_API}?ids=${missing.join(",")}`, { headers });
+      if (res.ok) {
+        const raw: unknown = await res.json();
+        if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+          const obj = raw as Record<string, unknown>;
+          for (const mint of missing) {
+            const entry = obj[mint];
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+            const usdPrice = (entry as Record<string, unknown>).usdPrice;
+            if (typeof usdPrice === "number" && usdPrice > 0) prices[mint] = usdPrice;
+          }
+        }
+      }
+    } catch {
+      // keep historical tail if live call fails
+    }
+  }
+
+  return prices;
+}
+
+function overlayLiveTail(
+  payload: ChartPayload,
+  allocations: { mint: string }[],
+  livePrices: Record<string, number>
+): ChartPayload {
+  if (!payload.data.length || Object.keys(livePrices).length === 0) return payload;
+
+  const now = Date.now();
+  const latestHistorical = payload.data[payload.data.length - 1];
+  const tailPrices: Record<string, number> = { ...latestHistorical.prices };
+
+  let updatedAny = false;
+  for (const a of allocations) {
+    const live = livePrices[a.mint];
+    if (typeof live === "number" && live > 0) {
+      tailPrices[a.mint] = live;
+      updatedAny = true;
+    }
+  }
+  if (!updatedAny) return payload;
+
+  const tailPoint: ChartPoint = { timestamp: now, prices: tailPrices };
+  const data = payload.data.slice();
+  const lastTs = latestHistorical.timestamp;
+  if (now - lastTs < DAY_MS / 2) {
+    data[data.length - 1] = tailPoint;
+  } else {
+    data.push(tailPoint);
+  }
+  return { basketId: payload.basketId, data };
+}
+
 // ── Main handler ───────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
   const rateLimited = enforceRateLimit(req, "api:chart", 20, 60_000);
@@ -185,11 +281,14 @@ export async function GET(req: NextRequest) {
   }
 
   // Cache key is safe: basket.id comes from the validated BASKETS config, not raw user input
-  const cacheKey = `basket_${basket.id}`;
+  const year = new Date().getUTCFullYear();
+  const cacheKey = `basket_${basket.id}_${year}`;
   const cached = readCache(cacheKey);
   const pythMints = basket.allocations.filter((a) => a.pythPriceId).map((a) => a.mint);
   if (cached && !isStaleZeroTailCache(cached, pythMints)) {
-    return NextResponse.json(cached, {
+    const live = await fetchLatestPricesForBasket(basket.allocations);
+    const merged = overlayLiveTail(cached as ChartPayload, basket.allocations, live);
+    return NextResponse.json(merged, {
       headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
     });
   }
@@ -204,7 +303,6 @@ export async function GET(req: NextRequest) {
   }
 
   const fetchPromise = (async () => {
-    const year = new Date().getUTCFullYear();
     const jan1Ms = Date.UTC(year, 0, 1); // midnight UTC Jan 1
     const nowMs = Date.now();
     const days = Math.ceil((nowMs - jan1Ms) / DAY_MS);
@@ -379,8 +477,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "No chart data" }, { status: 502 });
   }
 
-  writeCache(cacheKey, result);
-  return NextResponse.json(result, {
+  const historical = result as ChartPayload;
+  writeCache(cacheKey, historical);
+  const live = await fetchLatestPricesForBasket(basket.allocations);
+  const merged = overlayLiveTail(historical, basket.allocations, live);
+  return NextResponse.json(merged, {
     headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
   });
 }
