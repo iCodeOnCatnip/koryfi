@@ -18,7 +18,7 @@ const geistMono = Geist_Mono({
 
 const koltav = localFont({
   variable: "--font-koltav",
-  src: "../../fonts/koltav-extended-bold-font/Koltav-Regular-BF699537d86c952.ttf",
+  src: "../../Fonts/koltav-extended-bold-font/Koltav-Regular-BF699537d86c952.ttf",
   display: "swap",
 });
 
