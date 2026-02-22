@@ -30,8 +30,9 @@ const JUPITER_PRICE_API = "https://api.jup.ag/price/v3/price";
 const FETCH_TIMEOUT_MS = 8_000;
 const DAY_MS = 86_400_000;
 const CACHE_DIR = path.join(process.cwd(), ".chart-cache");
-const FASTAPI_CACHE_URL = process.env.FASTAPI_CHART_CACHE_URL?.replace(/\/+$/, "");
-const FASTAPI_CACHE_KEY = process.env.FASTAPI_CHART_CACHE_KEY;
+const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL?.replace(/\/+$/, "");
+const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const CHART_TTL_SECONDS = 24 * 60 * 60;
 
 function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
@@ -123,42 +124,56 @@ function writeCache(key: string, data: unknown) {
   }
 }
 
-async function readFastApiCache(
-  basketId: string,
-  year: number
-): Promise<ChartPayload | null> {
-  if (!FASTAPI_CACHE_URL) return null;
+function getUpstashKey(basketId: string, year: number): string {
+  return `chart:${year}:${basketId}`;
+}
+
+async function readUpstashCache(basketId: string, year: number): Promise<ChartPayload | null> {
+  if (!UPSTASH_REDIS_REST_URL || !UPSTASH_REDIS_REST_TOKEN) return null;
   try {
-    const headers: Record<string, string> = { Accept: "application/json" };
-    if (FASTAPI_CACHE_KEY) headers["x-api-key"] = FASTAPI_CACHE_KEY;
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
+      "Content-Type": "application/json",
+    };
+    const key = getUpstashKey(basketId, year);
     const res = await fetchWithTimeout(
-      `${FASTAPI_CACHE_URL}/charts/${encodeURIComponent(basketId)}?year=${year}`,
-      { headers }
+      `${UPSTASH_REDIS_REST_URL}/pipeline`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify([["GET", key]]),
+      }
     );
-    if (res.status === 404) return null;
     if (!res.ok) return null;
-    const json = (await res.json()) as { basketId?: string; data?: unknown };
-    if (json?.basketId !== basketId || !Array.isArray(json?.data)) return null;
-    return json as ChartPayload;
+    const json = (await res.json()) as Array<{ result?: unknown }>;
+    const raw = json?.[0]?.result;
+    if (typeof raw !== "string") return null;
+    const parsed = JSON.parse(raw) as { basketId?: string; data?: unknown };
+    if (parsed?.basketId !== basketId || !Array.isArray(parsed?.data)) return null;
+    return parsed as ChartPayload;
   } catch {
     return null;
   }
 }
 
-async function writeFastApiCache(basketId: string, year: number, payload: ChartPayload) {
-  if (!FASTAPI_CACHE_URL) return;
+async function writeUpstashCache(basketId: string, year: number, payload: ChartPayload) {
+  if (!UPSTASH_REDIS_REST_URL || !UPSTASH_REDIS_REST_TOKEN) return;
   try {
     const headers: Record<string, string> = {
       Accept: "application/json",
+      Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
       "Content-Type": "application/json",
     };
-    if (FASTAPI_CACHE_KEY) headers["x-api-key"] = FASTAPI_CACHE_KEY;
+    const key = getUpstashKey(basketId, year);
     await fetchWithTimeout(
-      `${FASTAPI_CACHE_URL}/charts/${encodeURIComponent(basketId)}?year=${year}`,
+      `${UPSTASH_REDIS_REST_URL}/pipeline`,
       {
-        method: "PUT",
+        method: "POST",
         headers,
-        body: JSON.stringify(payload),
+        body: JSON.stringify([
+          ["SET", key, JSON.stringify(payload), "EX", String(CHART_TTL_SECONDS)],
+        ]),
       }
     );
   } catch {
@@ -391,8 +406,8 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Optional external cache layer (FastAPI + DB) for instant cold-start loads
-  const externalCached = await readFastApiCache(basket.id, year);
+  // Optional external cache layer (Upstash Redis) for instant cold-start loads
+  const externalCached = await readUpstashCache(basket.id, year);
   if (externalCached && !isStaleZeroTailCache(externalCached, pythMints)) {
     writeCache(cacheKey, externalCached);
     const live = await fetchLatestPricesForBasket(basket.allocations);
@@ -584,7 +599,7 @@ export async function GET(req: NextRequest) {
 
   const historical = result as ChartPayload;
   writeCache(cacheKey, historical);
-  await writeFastApiCache(basket.id, year, historical);
+  await writeUpstashCache(basket.id, year, historical);
   const live = await fetchLatestPricesForBasket(basket.allocations);
   const merged = overlayLiveTail(historical, basket.allocations, live);
   return NextResponse.json(merged, {
