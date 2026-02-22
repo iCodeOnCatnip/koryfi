@@ -8,17 +8,25 @@ interface PriceDataPoint {
   prices: Record<string, number>; // mint -> USD price
 }
 
+const chartMemoryCache = new Map<string, PriceDataPoint[]>();
+
 /**
  * Fetch complete basket chart data from server in ONE call.
  * Server uses Pyth Benchmarks (fast, batched) + CoinGecko fallback for non-Pyth tokens.
  * Disk-cached for 24h on server — instant on repeat visits.
  */
 async function fetchBasketChart(basketId: string): Promise<PriceDataPoint[]> {
+  const cached = chartMemoryCache.get(basketId);
+  if (cached && cached.length > 0) return cached;
+
   const res = await fetch(`/api/chart?basket=${encodeURIComponent(basketId)}`, {
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`Failed to fetch chart: ${res.status}`);
   const json: { data: PriceDataPoint[] } = await res.json();
+  if (Array.isArray(json.data) && json.data.length > 0) {
+    chartMemoryCache.set(basketId, json.data);
+  }
   return json.data;
 }
 

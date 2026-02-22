@@ -54,3 +54,7 @@ MEMORY_*.md
 
 # Claude Code internal tool config
 .claude/
+
+# fastapi chart cache service artifacts
+services/chart-cache-api/.venv/
+services/chart-cache-api/*.db

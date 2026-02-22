@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASKETS } from "@/lib/baskets/config";
 import { enforceRateLimit } from "@/lib/server/security";
+import fs from "fs";
+import path from "path";
 
 export const dynamic = "force-dynamic";
 
@@ -25,8 +27,11 @@ const HERMES_BENCHMARK = "https://hermes.pyth.network/v2/updates/price";
 const HERMES_LATEST = "https://hermes.pyth.network/v2/updates/price/latest";
 const CG_BASE = "https://api.coingecko.com/api/v3";
 const JUPITER_PRICE_API = "https://api.jup.ag/price/v3/price";
-const FETCH_TIMEOUT_MS = 15_000;
+const FETCH_TIMEOUT_MS = 8_000;
 const DAY_MS = 86_400_000;
+const CACHE_DIR = path.join(process.cwd(), ".chart-cache");
+const FASTAPI_CACHE_URL = process.env.FASTAPI_CHART_CACHE_URL?.replace(/\/+$/, "");
+const FASTAPI_CACHE_KEY = process.env.FASTAPI_CHART_CACHE_KEY;
 
 function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
@@ -39,6 +44,31 @@ const CHART_TTL_HISTORICAL = 24 * 60 * 60_000; // 24h otherwise
 // ── In-memory cache ─────────────────────────────────────────────────
 const memCache = new Map<string, { data: unknown; ts: number }>();
 
+function ensureCacheDir() {
+  if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
+}
+
+function payloadYear(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const data = (payload as { data?: unknown }).data;
+  if (!Array.isArray(data) || data.length === 0) return null;
+  const first = data[0] as { timestamp?: unknown };
+  if (typeof first?.timestamp !== "number") return null;
+  return new Date(first.timestamp).getUTCFullYear();
+}
+
+function readDiskCache(key: string): { data: unknown; ts: number } | null {
+  const fp = path.join(CACHE_DIR, `${key}.json`);
+  try {
+    if (!fs.existsSync(fp)) return null;
+    const stat = fs.statSync(fp);
+    const data = JSON.parse(fs.readFileSync(fp, "utf-8")) as unknown;
+    return { data, ts: stat.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
 function payloadHasTodayPoint(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
   const data = (payload as { data?: unknown }).data;
@@ -50,19 +80,90 @@ function payloadHasTodayPoint(payload: unknown): boolean {
   return last.timestamp >= startOfTodayUtc;
 }
 
-function readCache(key: string): unknown | null {
-  const entry = memCache.get(key);
-  if (!entry) return null;
-  const ttl = payloadHasTodayPoint(entry.data) ? CHART_TTL_INTRADAY : CHART_TTL_HISTORICAL;
-  if (Date.now() - entry.ts > ttl) {
+function readCache(key: string, expectedYear: number, legacyKey?: string): unknown | null {
+  const fromMem = memCache.get(key);
+  if (fromMem) {
+    const ttl = payloadHasTodayPoint(fromMem.data) ? CHART_TTL_INTRADAY : CHART_TTL_HISTORICAL;
+    if (Date.now() - fromMem.ts <= ttl && payloadYear(fromMem.data) === expectedYear) {
+      return fromMem.data;
+    }
     memCache.delete(key);
-    return null;
   }
-  return entry.data;
+
+  const diskCurrent = readDiskCache(key);
+  if (diskCurrent) {
+    const ttl = payloadHasTodayPoint(diskCurrent.data) ? CHART_TTL_INTRADAY : CHART_TTL_HISTORICAL;
+    if (Date.now() - diskCurrent.ts <= ttl && payloadYear(diskCurrent.data) === expectedYear) {
+      memCache.set(key, diskCurrent);
+      return diskCurrent.data;
+    }
+  }
+
+  if (legacyKey) {
+    const diskLegacy = readDiskCache(legacyKey);
+    if (diskLegacy) {
+      const ttl = payloadHasTodayPoint(diskLegacy.data) ? CHART_TTL_INTRADAY : CHART_TTL_HISTORICAL;
+      if (Date.now() - diskLegacy.ts <= ttl && payloadYear(diskLegacy.data) === expectedYear) {
+        memCache.set(key, { data: diskLegacy.data, ts: diskLegacy.ts });
+        return diskLegacy.data;
+      }
+    }
+  }
+
+  return null;
 }
 
 function writeCache(key: string, data: unknown) {
   memCache.set(key, { data, ts: Date.now() });
+  try {
+    ensureCacheDir();
+    fs.writeFileSync(path.join(CACHE_DIR, `${key}.json`), JSON.stringify(data));
+  } catch {
+    // ignore disk write issues; memory cache still works
+  }
+}
+
+async function readFastApiCache(
+  basketId: string,
+  year: number
+): Promise<ChartPayload | null> {
+  if (!FASTAPI_CACHE_URL) return null;
+  try {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (FASTAPI_CACHE_KEY) headers["x-api-key"] = FASTAPI_CACHE_KEY;
+    const res = await fetchWithTimeout(
+      `${FASTAPI_CACHE_URL}/charts/${encodeURIComponent(basketId)}?year=${year}`,
+      { headers }
+    );
+    if (res.status === 404) return null;
+    if (!res.ok) return null;
+    const json = (await res.json()) as { basketId?: string; data?: unknown };
+    if (json?.basketId !== basketId || !Array.isArray(json?.data)) return null;
+    return json as ChartPayload;
+  } catch {
+    return null;
+  }
+}
+
+async function writeFastApiCache(basketId: string, year: number, payload: ChartPayload) {
+  if (!FASTAPI_CACHE_URL) return;
+  try {
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    };
+    if (FASTAPI_CACHE_KEY) headers["x-api-key"] = FASTAPI_CACHE_KEY;
+    await fetchWithTimeout(
+      `${FASTAPI_CACHE_URL}/charts/${encodeURIComponent(basketId)}?year=${year}`,
+      {
+        method: "PUT",
+        headers,
+        body: JSON.stringify(payload),
+      }
+    );
+  } catch {
+    // non-fatal: local cache remains source of truth
+  }
 }
 
 // In-flight dedup: prevents concurrent requests from triggering duplicate fetches
@@ -125,16 +226,13 @@ async function fetchPythDay(
 }
 
 // ── CoinGecko: fetch one token's chart ─────────────────────────────
-async function fetchCoinGeckoChart(
-  coingeckoId: string,
-  days: number
-): Promise<[number, number][] | null> {
+async function fetchCoinGeckoChart(coingeckoId: string, days: number): Promise<[number, number][] | null> {
   const url = `${CG_BASE}/coins/${encodeURIComponent(coingeckoId)}/market_chart?vs_currency=usd&days=${days}&interval=daily`;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const res = await fetchWithTimeout(url, { headers: { Accept: "application/json" } });
       if (res.status === 429) {
-        await new Promise((r) => setTimeout(r, 15_000 * (attempt + 1)));
+        await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
         continue;
       }
       if (!res.ok) return null;
@@ -142,7 +240,7 @@ async function fetchCoinGeckoChart(
       if (!Array.isArray(json?.prices)) return null;
       return json.prices as [number, number][];
     } catch {
-      if (attempt < 2) await new Promise((r) => setTimeout(r, 5000));
+      if (attempt < 1) await new Promise((r) => setTimeout(r, 1500));
     }
   }
   return null;
@@ -283,11 +381,22 @@ export async function GET(req: NextRequest) {
   // Cache key is safe: basket.id comes from the validated BASKETS config, not raw user input
   const year = new Date().getUTCFullYear();
   const cacheKey = `basket_${basket.id}_${year}`;
-  const cached = readCache(cacheKey);
+  const cached = readCache(cacheKey, year, `basket_${basket.id}`);
   const pythMints = basket.allocations.filter((a) => a.pythPriceId).map((a) => a.mint);
   if (cached && !isStaleZeroTailCache(cached, pythMints)) {
     const live = await fetchLatestPricesForBasket(basket.allocations);
     const merged = overlayLiveTail(cached as ChartPayload, basket.allocations, live);
+    return NextResponse.json(merged, {
+      headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
+    });
+  }
+
+  // Optional external cache layer (FastAPI + DB) for instant cold-start loads
+  const externalCached = await readFastApiCache(basket.id, year);
+  if (externalCached && !isStaleZeroTailCache(externalCached, pythMints)) {
+    writeCache(cacheKey, externalCached);
+    const live = await fetchLatestPricesForBasket(basket.allocations);
+    const merged = overlayLiveTail(externalCached, basket.allocations, live);
     return NextResponse.json(merged, {
       headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
     });
@@ -327,16 +436,12 @@ export async function GET(req: NextRequest) {
 
       // Higher parallelism without fixed inter-batch sleeps significantly reduces
       // first-load latency; retries in fetchPythDay still handle transient 429s.
-      const BATCH_SIZE = 20;
       const pythDayPrices: Record<number, Record<string, number>>[] = [];
-
-      for (let i = 0; i < dailyTimestamps.length; i += BATCH_SIZE) {
-        const batch = dailyTimestamps.slice(i, i + BATCH_SIZE);
-        const results = await Promise.all(
-          batch.map((ts) => fetchPythDay(ts, pythIds).then((prices) => ({ ts, prices })))
-        );
-        for (const r of results) pythDayPrices.push({ [r.ts]: r.prices });
-      }
+      const results = await mapWithConcurrency(dailyTimestamps, 20, async (ts) => {
+        const prices = await fetchPythDay(ts, pythIds);
+        return { ts, prices };
+      });
+      for (const r of results) pythDayPrices.push({ [r.ts]: r.prices });
 
       for (const t of pythTokens) mintPrices[t.mint] = [];
 
@@ -479,6 +584,7 @@ export async function GET(req: NextRequest) {
 
   const historical = result as ChartPayload;
   writeCache(cacheKey, historical);
+  await writeFastApiCache(basket.id, year, historical);
   const live = await fetchLatestPricesForBasket(basket.allocations);
   const merged = overlayLiveTail(historical, basket.allocations, live);
   return NextResponse.json(merged, {
