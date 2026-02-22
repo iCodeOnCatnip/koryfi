@@ -41,9 +41,9 @@ export const SOLANA_RPC_URL =
   process.env.NEXT_PUBLIC_SOLANA_RPC_URL ||
   "https://api.mainnet-beta.solana.com";
 
-// Fee collection wallet — replace with your actual wallet
+// Fee collection wallet — override via NEXT_PUBLIC_FEE_WALLET env var if needed
 export const FEE_WALLET =
-  process.env.NEXT_PUBLIC_FEE_WALLET || "";
+  process.env.NEXT_PUBLIC_FEE_WALLET || "3zbi6PTctRZiQqaUYy9z6EMw528yecsQ9sUwgTXzJ5We";
 
 // Jupiter API key — server-side only (used in /api/prices and jupiter.ts via server context)
 export const JUPITER_API_KEY =

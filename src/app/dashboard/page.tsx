@@ -385,31 +385,40 @@ function InvestmentTransactionsHistory({ records }: { records: PurchaseRecord[] 
                         </a>
                       )}
 
-                      {hasTxSignatures &&
-                        record.txSignatures.slice(1).map((sig, i) => (
-                          <a
-                            key={sig}
-                            href={`https://solscan.io/tx/${sig}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex items-center justify-between text-sm py-1 px-2 rounded-lg hover:bg-primary/5 transition-colors group"
-                          >
-                            <div className="flex items-center gap-2">
-                              <div className="w-1.5 h-1.5 rounded-full bg-primary/60" />
-                              <span className="text-muted-foreground">
-                                Txn {i + 1}
+                      {hasTxSignatures && (() => {
+                        // If there are more txes than token allocations, tx[0] is
+                        // the platform fee transfer; the rest are token swaps.
+                        const hasFeeAtIndex0 = record.txSignatures.length > record.allocations.length;
+                        let swapCounter = 0;
+                        return record.txSignatures.map((sig, i) => {
+                          const isFee = hasFeeAtIndex0 && i === 0;
+                          if (!isFee) swapCounter++;
+                          return (
+                            <a
+                              key={sig}
+                              href={`https://solscan.io/tx/${sig}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center justify-between text-sm py-1 px-2 rounded-lg hover:bg-primary/5 transition-colors group"
+                            >
+                              <div className="flex items-center gap-2">
+                                <div className="w-1.5 h-1.5 rounded-full bg-primary/60" />
+                                <span className="text-muted-foreground">
+                                  {isFee ? "Platform Fee" : `Swap Txn ${swapCounter}`}
+                                </span>
+                              </div>
+                              <span className="font-mono text-xs text-muted-foreground group-hover:text-primary transition-colors">
+                                {sig.slice(0, 12)}...
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="inline ml-1">
+                                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                                  <polyline points="15 3 21 3 21 9" />
+                                  <line x1="10" y1="14" x2="21" y2="3" />
+                                </svg>
                               </span>
-                            </div>
-                            <span className="font-mono text-xs text-muted-foreground group-hover:text-primary transition-colors">
-                              {sig.slice(0, 12)}...
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="inline ml-1">
-                                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                                <polyline points="15 3 21 3 21 9" />
-                                <line x1="10" y1="14" x2="21" y2="3" />
-                              </svg>
-                            </span>
-                          </a>
-                        ))}
+                            </a>
+                          );
+                        });
+                      })()}
                     </div>
                   )}
                 </div>
@@ -479,14 +488,17 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!wallet.publicKey) { setOnChainBalances(null); return; }
+    let cancelled = false;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000);
     fetch(`/api/balances?address=${wallet.publicKey.toString()}`, { signal: controller.signal })
       .then((r) => r.json())
-      .then((data: { balances?: Record<string, number> }) => setOnChainBalances(data.balances ?? {}))
-      .catch((err) => { if (err.name !== "AbortError") setOnChainBalances({}); })
+      .then((data: { balances?: Record<string, number> }) => {
+        if (!cancelled) setOnChainBalances(data.balances ?? {});
+      })
+      .catch(() => { if (!cancelled) setOnChainBalances({}); })
       .finally(() => clearTimeout(timeout));
-    return () => { clearTimeout(timeout); controller.abort(); };
+    return () => { cancelled = true; clearTimeout(timeout); controller.abort(); };
   }, [wallet.publicKey]);
 
   useEffect(() => {
