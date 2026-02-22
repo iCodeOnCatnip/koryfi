@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BASKETS } from "@/lib/baskets/config";
-import fs from "fs";
-import path from "path";
 import { enforceRateLimit } from "@/lib/server/security";
 
 /**
@@ -16,7 +14,9 @@ import { enforceRateLimit } from "@/lib/server/security";
  *   - CoinGecko for tokens WITHOUT pythPriceId (pSOL, hSOL, bonkSOL) —
  *     Only 3 requests, sequential with 2s gap.
  *
- * Caching: disk-based, 24h TTL, survives server restarts.
+ * Caching: in-memory, 24h TTL. First request per basket per cold-start does
+ * the full fetch; every subsequent request within the same instance returns
+ * instantly from memory. Compatible with Vercel (no filesystem writes).
  */
 
 const HERMES_BENCHMARK = "https://hermes.pyth.network/v2/updates/price";
@@ -29,36 +29,27 @@ function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
   const t = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(t));
 }
-const CACHE_DIR = path.join(process.cwd(), ".chart-cache");
 const CHART_TTL = 86_400_000; // 24h
 
-// In-flight dedup: prevents concurrent requests from triggering duplicate fetches
-const inFlight = new Map<string, Promise<unknown>>();
-
-// ── Disk cache ─────────────────────────────────────────────────────
-function ensureCacheDir() {
-  if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
-}
+// ── In-memory cache ─────────────────────────────────────────────────
+const memCache = new Map<string, { data: unknown; ts: number }>();
 
 function readCache(key: string): unknown | null {
-  const fp = path.join(CACHE_DIR, `${key}.json`);
-  try {
-    if (!fs.existsSync(fp)) return null;
-    if (Date.now() - fs.statSync(fp).mtimeMs > CHART_TTL) return null;
-    return JSON.parse(fs.readFileSync(fp, "utf-8"));
-  } catch {
+  const entry = memCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CHART_TTL) {
+    memCache.delete(key);
     return null;
   }
+  return entry.data;
 }
 
 function writeCache(key: string, data: unknown) {
-  try {
-    ensureCacheDir();
-    fs.writeFileSync(path.join(CACHE_DIR, `${key}.json`), JSON.stringify(data));
-  } catch (err) {
-    console.error(`Failed to write chart cache for ${key}:`, err);
-  }
+  memCache.set(key, { data, ts: Date.now() });
 }
+
+// In-flight dedup: prevents concurrent requests from triggering duplicate fetches
+const inFlight = new Map<string, Promise<unknown>>();
 
 function isStaleZeroTailCache(payload: unknown, pythMints: string[]): boolean {
   if (pythMints.length === 0) return false;
@@ -127,7 +118,9 @@ async function fetchCoinGeckoChart(
         continue;
       }
       if (!res.ok) return null;
-      return (await res.json()).prices;
+      const json = await res.json();
+      if (!Array.isArray(json?.prices)) return null;
+      return json.prices as [number, number][];
     } catch {
       if (attempt < 2) await new Promise((r) => setTimeout(r, 5000));
     }
