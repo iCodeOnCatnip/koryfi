@@ -12,6 +12,7 @@ import { enforceRateLimit, isAllowedMint } from "@/lib/server/security";
 
 const HERMES_API = "https://hermes.pyth.network/v2/updates/price/latest";
 const JUPITER_PRICE_API = "https://api.jup.ag/price/v3/price";
+const COINGECKO_SIMPLE_API = "https://api.coingecko.com/api/v3/simple/price";
 const FETCH_TIMEOUT_MS = 10_000;
 
 function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
@@ -22,12 +23,81 @@ function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
 
 const mintToPyth: Record<string, string> = {};
 const pythToMint: Record<string, string> = {};
+const mintToCoingecko: Record<string, string> = {};
 for (const basket of BASKETS) {
   for (const alloc of basket.allocations) {
+    mintToCoingecko[alloc.mint] = alloc.coingeckoId;
     if (alloc.pythPriceId) {
       mintToPyth[alloc.mint] = alloc.pythPriceId;
       pythToMint[alloc.pythPriceId.replace("0x", "")] = alloc.mint;
     }
+  }
+}
+
+function extractJupiterPrices(
+  raw: unknown,
+  mints: string[]
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return out;
+  const data = raw as Record<string, unknown>;
+  for (const mint of mints) {
+    const entry = data[mint];
+    if (entry !== null && typeof entry === "object" && !Array.isArray(entry)) {
+      const usdPrice = (entry as Record<string, unknown>).usdPrice;
+      if (typeof usdPrice === "number" && usdPrice > 0) out[mint] = usdPrice;
+    }
+  }
+  return out;
+}
+
+async function fetchJupiterPrices(mints: string[]): Promise<Record<string, number>> {
+  if (mints.length === 0) return {};
+
+  const apiKey = process.env.JUPITER_API_KEY;
+  const call = async (withKey: boolean) => {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (withKey && apiKey) headers["x-api-key"] = apiKey;
+    return fetchWithTimeout(`${JUPITER_PRICE_API}?ids=${mints.join(",")}`, { headers });
+  };
+
+  try {
+    let res = await call(true);
+    if ((res.status === 401 || res.status === 403) && apiKey) {
+      res = await call(false);
+    }
+    if (!res.ok) return {};
+    return extractJupiterPrices(await res.json(), mints);
+  } catch {
+    return {};
+  }
+}
+
+async function fetchCoinGeckoSimplePrices(mints: string[]): Promise<Record<string, number>> {
+  const pairs = mints
+    .map((mint) => ({ mint, id: mintToCoingecko[mint] }))
+    .filter((x) => !!x.id);
+  if (pairs.length === 0) return {};
+
+  try {
+    const ids = Array.from(new Set(pairs.map((x) => x.id)));
+    const url = `${COINGECKO_SIMPLE_API}?ids=${encodeURIComponent(ids.join(","))}&vs_currencies=usd`;
+    const res = await fetchWithTimeout(url, { headers: { Accept: "application/json" } });
+    if (!res.ok) return {};
+    const raw = await res.json();
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
+
+    const byId = raw as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    for (const { mint, id } of pairs) {
+      const entry = byId[id];
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const usd = (entry as Record<string, unknown>).usd;
+      if (typeof usd === "number" && usd > 0) out[mint] = usd;
+    }
+    return out;
+  } catch {
+    return {};
   }
 }
 
@@ -72,30 +142,17 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const missing = mints.filter((m) => !prices[m]);
+  let missing = mints.filter((m) => !prices[m]);
   if (missing.length > 0) {
-    try {
-      const apiKey = process.env.JUPITER_API_KEY;
-      const headers: Record<string, string> = { Accept: "application/json" };
-      if (apiKey) headers["x-api-key"] = apiKey;
+    const jup = await fetchJupiterPrices(missing);
+    Object.assign(prices, jup);
+  }
 
-      const res = await fetchWithTimeout(`${JUPITER_PRICE_API}?ids=${missing.join(",")}`, { headers });
-      if (res.ok) {
-        const raw: unknown = await res.json();
-        if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
-          const data = raw as Record<string, unknown>;
-          for (const mint of missing) {
-            const entry = data[mint];
-            if (entry !== null && typeof entry === "object" && !Array.isArray(entry)) {
-              const usdPrice = (entry as Record<string, unknown>).usdPrice;
-              if (typeof usdPrice === "number" && usdPrice > 0) prices[mint] = usdPrice;
-            }
-          }
-        }
-      }
-    } catch {
-      // Jupiter failed - prices for these mints will be missing
-    }
+  // Final fallback for non-Pyth tokens (e.g. pSOL/hSOL/bonkSOL)
+  missing = mints.filter((m) => !prices[m]);
+  if (missing.length > 0) {
+    const cg = await fetchCoinGeckoSimplePrices(missing);
+    Object.assign(prices, cg);
   }
 
   return NextResponse.json({ prices });

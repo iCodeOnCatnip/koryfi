@@ -51,11 +51,19 @@ export async function getQuote(
     excludeDexes: "HumidiFi",
   });
 
-  const response = await fetch(`${JUPITER_QUOTE_API}?${params}`, {
-    headers: {
-      ...(JUPITER_API_KEY ? { "x-api-key": JUPITER_API_KEY } : {}),
-    },
-  });
+  const requestQuote = (withKey: boolean) =>
+    fetch(`${JUPITER_QUOTE_API}?${params}`, {
+      headers: {
+        ...(withKey && JUPITER_API_KEY ? { "x-api-key": JUPITER_API_KEY } : {}),
+      },
+    });
+
+  let response = await requestQuote(true);
+  if ((response.status === 401 || response.status === 403) && JUPITER_API_KEY) {
+    // If configured key is invalid/expired, fall back to public endpoint.
+    response = await requestQuote(false);
+  }
+
   if (!response.ok) {
     const error = await response.text();
     throw new Error(`Jupiter quote failed: ${error}`);
@@ -85,14 +93,21 @@ export async function getSwapInstructions(
     body.feeAccount = feeAccount;
   }
 
-  const response = await fetch(JUPITER_SWAP_API, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(JUPITER_API_KEY ? { "x-api-key": JUPITER_API_KEY } : {}),
-    },
-    body: JSON.stringify(body),
-  });
+  const requestSwap = (withKey: boolean) =>
+    fetch(JUPITER_SWAP_API, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(withKey && JUPITER_API_KEY ? { "x-api-key": JUPITER_API_KEY } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+
+  let response = await requestSwap(true);
+  if ((response.status === 401 || response.status === 403) && JUPITER_API_KEY) {
+    // If configured key is invalid/expired, fall back to public endpoint.
+    response = await requestSwap(false);
+  }
 
   if (!response.ok) {
     const error = await response.text();

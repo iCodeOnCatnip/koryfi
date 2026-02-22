@@ -287,7 +287,7 @@ async function mapWithConcurrency<T, R>(
 }
 
 async function fetchLatestPricesForBasket(
-  allocations: { mint: string; pythPriceId?: string }[]
+  allocations: { mint: string; pythPriceId?: string; coingeckoId?: string }[]
 ): Promise<Record<string, number>> {
   const prices: Record<string, number> = {};
 
@@ -321,10 +321,18 @@ async function fetchLatestPricesForBasket(
   const missing = allocations.map((a) => a.mint).filter((mint) => !(mint in prices));
   if (missing.length > 0) {
     try {
-      const headers: Record<string, string> = { Accept: "application/json" };
       const apiKey = process.env.JUPITER_API_KEY;
-      if (apiKey) headers["x-api-key"] = apiKey;
-      const res = await fetchWithTimeout(`${JUPITER_PRICE_API}?ids=${missing.join(",")}`, { headers });
+      const callJup = async (withKey: boolean) => {
+        const headers: Record<string, string> = { Accept: "application/json" };
+        if (withKey && apiKey) headers["x-api-key"] = apiKey;
+        return fetchWithTimeout(`${JUPITER_PRICE_API}?ids=${missing.join(",")}`, { headers });
+      };
+
+      let res = await callJup(true);
+      if ((res.status === 401 || res.status === 403) && apiKey) {
+        res = await callJup(false);
+      }
+
       if (res.ok) {
         const raw: unknown = await res.json();
         if (raw && typeof raw === "object" && !Array.isArray(raw)) {
@@ -339,6 +347,30 @@ async function fetchLatestPricesForBasket(
       }
     } catch {
       // keep historical tail if live call fails
+    }
+  }
+
+  // 3) CoinGecko fallback for anything still missing (non-Pyth staked SOL tokens, etc.)
+  const stillMissing = allocations.filter((a) => !(a.mint in prices) && !!a.coingeckoId);
+  if (stillMissing.length > 0) {
+    try {
+      const ids = Array.from(new Set(stillMissing.map((a) => a.coingeckoId!)));
+      const url = `${CG_BASE}/simple/price?ids=${encodeURIComponent(ids.join(","))}&vs_currencies=usd`;
+      const res = await fetchWithTimeout(url, { headers: { Accept: "application/json" } });
+      if (res.ok) {
+        const raw = await res.json();
+        if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+          const byId = raw as Record<string, unknown>;
+          for (const a of stillMissing) {
+            const entry = byId[a.coingeckoId!];
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+            const usd = (entry as Record<string, unknown>).usd;
+            if (typeof usd === "number" && usd > 0) prices[a.mint] = usd;
+          }
+        }
+      }
+    } catch {
+      // keep historical tail if all live fallbacks fail
     }
   }
 
