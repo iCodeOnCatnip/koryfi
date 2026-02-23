@@ -4,16 +4,15 @@ import { enforceRateLimit, MINT_REGEX } from "@/lib/server/security";
 /**
  * GET /api/balances?address=<wallet_pubkey>
  *
- * Proxies the Helius /v0/addresses/{address}/balances endpoint server-side
+ * Proxies the Helius /v1/wallet/{address}/balances endpoint server-side
  * to keep the API key off the client.
  *
- * Returns: { balances: Record<mint, uiAmount> }
- *   - SPL token balances as human-readable amounts
- *   - Native SOL balance under the wSOL mint key
+ * Returns: { totalUsdValue: number }
+ *   - Total USD value of all tokens in the wallet (priced by Helius)
+ *   - Includes SOL, SPL tokens, USDC, USDT — everything
  */
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
-const WSOL_MINT = "So11111111111111111111111111111111111111112";
 
 function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
@@ -23,7 +22,7 @@ function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
 
 const BALANCE_TTL_MS = 20_000;
 const MAX_BALANCE_CACHE_ENTRIES = 3000;
-const balanceCache = new Map<string, { ts: number; balances: Record<string, number> }>();
+const balanceCache = new Map<string, { ts: number; totalUsdValue: number }>();
 
 function pruneBalanceCache(now: number) {
   for (const [key, entry] of balanceCache) {
@@ -57,33 +56,22 @@ export async function GET(req: NextRequest) {
   pruneBalanceCache(now);
   const cached = balanceCache.get(address);
   if (cached && now - cached.ts < BALANCE_TTL_MS) {
-    return NextResponse.json({ balances: cached.balances, cached: true });
+    return NextResponse.json({ totalUsdValue: cached.totalUsdValue, cached: true });
   }
 
   try {
     const res = await fetchWithTimeout(
-      `https://api.helius.xyz/v0/addresses/${address}/balances?api-key=${HELIUS_API_KEY}`
+      `https://api.helius.xyz/v1/wallet/${address}/balances?api-key=${HELIUS_API_KEY}`
     );
     if (!res.ok) {
       return NextResponse.json({ error: "Failed to fetch balances" }, { status: 502 });
     }
 
-    const data: {
-      tokens: { mint: string; amount: number; decimals: number }[];
-      nativeBalance: number;
-    } = await res.json();
+    const data: { totalUsdValue?: number } = await res.json();
+    const totalUsdValue = data.totalUsdValue ?? 0;
 
-    const balances: Record<string, number> = {};
-
-    for (const t of data.tokens ?? []) {
-      if (t.amount > 0) balances[t.mint] = t.amount / 10 ** t.decimals;
-    }
-    if ((data.nativeBalance ?? 0) > 0) {
-      balances[WSOL_MINT] = data.nativeBalance / 1e9;
-    }
-
-    balanceCache.set(address, { ts: now, balances });
-    return NextResponse.json({ balances });
+    balanceCache.set(address, { ts: now, totalUsdValue });
+    return NextResponse.json({ totalUsdValue });
   } catch {
     return NextResponse.json({ error: "Failed to fetch balances" }, { status: 500 });
   }

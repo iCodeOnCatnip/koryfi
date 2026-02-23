@@ -164,12 +164,12 @@ function DashboardPieChart({ positions }: { positions: BasketPosition[] }) {
 function PortfolioMetricsCard({
   investedValue,
   currentValue,
-  walletBalance,
+  walletUsdValue,
   balancesError,
 }: {
   investedValue: number;
   currentValue: number;
-  walletBalance: number | null;
+  walletUsdValue: number | null;
   balancesError: boolean;
 }) {
   const pnl = currentValue - investedValue;
@@ -202,8 +202,8 @@ function PortfolioMetricsCard({
           <p className="text-2xl md:text-3xl font-mono font-semibold text-muted-foreground leading-none">
             {balancesError
               ? <span className="text-red-400 text-lg">Unable to load</span>
-              : walletBalance !== null
-                ? fmtUsd(walletBalance)
+              : walletUsdValue !== null
+                ? fmtUsd(walletUsdValue)
                 : <span className="text-muted-foreground text-2xl">Loading...</span>
             }
           </p>
@@ -480,8 +480,7 @@ export default function DashboardPage() {
   const { prices } = usePrices();
 
   const [records, setRecords] = useState<PurchaseRecord[]>([]);
-  const [onChainBalances, setOnChainBalances] = useState<Record<string, number> | null>(null);
-  const [onChainMintPrices, setOnChainMintPrices] = useState<Record<string, number>>({});
+  const [walletUsdValue, setWalletUsdValue] = useState<number | null>(null);
   const [balancesError, setBalancesError] = useState(false);
   const [historyTab, setHistoryTab] = useState<"investment" | "deposit">("investment");
   const [historyPanelHeight, setHistoryPanelHeight] = useState<number | null>(null);
@@ -493,19 +492,18 @@ export default function DashboardPage() {
   }, [wallet.publicKey]);
 
   useEffect(() => {
-    if (!wallet.publicKey) { setOnChainBalances(null); setBalancesError(false); return; }
+    if (!wallet.publicKey) { setWalletUsdValue(null); setBalancesError(false); return; }
     let cancelled = false;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000);
     fetch(`/api/balances?address=${wallet.publicKey.toString()}`, { signal: controller.signal })
       .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then((data: { balances: Record<string, number> }) => {
-        if (!cancelled) { setOnChainBalances(data.balances ?? {}); setBalancesError(false); }
+      .then((data: { totalUsdValue: number }) => {
+        if (!cancelled) { setWalletUsdValue(data.totalUsdValue ?? 0); setBalancesError(false); }
       })
       .catch((err) => {
         if (!cancelled) {
           if (err?.name !== "AbortError") console.error("[balances]", err);
-          setOnChainBalances({});
           setBalancesError(err?.name !== "AbortError");
         }
       })
@@ -513,43 +511,12 @@ export default function DashboardPage() {
     return () => { cancelled = true; clearTimeout(timeout); controller.abort(); };
   }, [wallet.publicKey]);
 
-  useEffect(() => {
-    if (!onChainBalances) {
-      setOnChainMintPrices({});
-      return;
-    }
-    const mints = Object.keys(onChainBalances);
-    if (mints.length === 0) {
-      setOnChainMintPrices({});
-      return;
-    }
-
-    let cancelled = false;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10_000);
-    fetch(`/api/prices?mints=${mints.join(",")}`, { signal: controller.signal })
-      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then((data: { prices: Record<string, number> }) => {
-        if (!cancelled) setOnChainMintPrices(data.prices ?? {});
-      })
-      .catch((err) => { if (!cancelled && err?.name !== "AbortError") setOnChainMintPrices({}); })
-      .finally(() => clearTimeout(timeout));
-    return () => { cancelled = true; clearTimeout(timeout); controller.abort(); };
-  }, [onChainBalances]);
-
   const basketPositions = useMemo(
     () => computeBasketPositions(records, prices),
     [records, prices]
   );
   const investedValue = useMemo(() => basketPositions.reduce((s, b) => s + b.totalInvestedUsd, 0), [basketPositions]);
   const currentValue = useMemo(() => basketPositions.reduce((s, b) => s + b.currentValueUsd, 0), [basketPositions]);
-  const walletBalance = useMemo(() => {
-    if (!onChainBalances) return null;
-    return Object.entries(onChainBalances).reduce(
-      (s, [mint, qty]) => s + qty * (onChainMintPrices[mint] ?? prices[mint] ?? 0),
-      0
-    );
-  }, [onChainBalances, onChainMintPrices, prices]);
 
   if (!wallet.publicKey) {
     return (
@@ -575,7 +542,7 @@ export default function DashboardPage() {
         <PortfolioMetricsCard
           investedValue={investedValue}
           currentValue={currentValue}
-          walletBalance={walletBalance}
+          walletUsdValue={walletUsdValue}
           balancesError={balancesError}
         />
         <Card className="border-primary/10 bg-card">
