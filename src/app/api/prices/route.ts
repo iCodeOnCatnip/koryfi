@@ -142,16 +142,17 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Missing mints param" }, { status: 400 });
   }
 
-  const mints = Array.from(new Set(mintsParam.split(",").map((m) => m.trim()).filter(Boolean)));
-  if (mints.length === 0) {
-    return NextResponse.json({ prices: {} });
+  const rawMints = Array.from(new Set(mintsParam.split(",").map((m) => m.trim()).filter(Boolean)));
+  if (rawMints.length === 0) return NextResponse.json({ prices: {} });
+  if (rawMints.length > 50) {
+    return NextResponse.json({ error: "Too many mints requested (max 50)" }, { status: 400 });
   }
-  if (mints.length > 25) {
-    return NextResponse.json({ error: "Too many mints requested (max 25)" }, { status: 400 });
-  }
-  if (mints.some((mint) => !isAllowedMint(mint))) {
-    return NextResponse.json({ error: "Invalid or unsupported mint" }, { status: 400 });
-  }
+
+  // Filter to known basket mints only — unknown mints (random wallet tokens) are silently
+  // skipped so the whole request isn't rejected when a user holds non-basket tokens.
+  // Security is preserved: we never call external APIs for arbitrary/unknown mints.
+  const mints = rawMints.filter(isAllowedMint);
+  if (mints.length === 0) return NextResponse.json({ prices: {} });
 
   const prices: Record<string, number> = {};
 

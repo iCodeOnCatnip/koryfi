@@ -138,18 +138,22 @@ export function PerformanceChart({
     return () => { cancelled = true; };
   }, [basket.id]);
 
+  // Shared launch-index map: first data point where each token has a non-zero price.
+  // Computed once and reused by both chartData and tokenPerf to avoid redundant findIndex calls.
+  const firstValidIndex = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const alloc of basket.allocations) {
+      const idx = dataWithLive.findIndex((p) => p.prices[alloc.mint] > 0);
+      if (idx !== -1) map[alloc.mint] = idx;
+    }
+    return map;
+  }, [dataWithLive, basket.allocations]);
+
   const chartData = useMemo(() => {
     if (dataWithLive.length === 0) return [];
     const activeWeights =
       weights ||
       Object.fromEntries(basket.allocations.map((a) => [a.mint, a.weight]));
-
-    // For each token, find the index of its first non-zero price (launch date)
-    const firstValidIndex: Record<string, number> = {};
-    for (const alloc of basket.allocations) {
-      const idx = dataWithLive.findIndex((p) => p.prices[alloc.mint] && p.prices[alloc.mint] > 0);
-      if (idx !== -1) firstValidIndex[alloc.mint] = idx;
-    }
 
     // Only include tokens that have at least one valid price
     const validAllocs = basket.allocations.filter((a) => firstValidIndex[a.mint] !== undefined);
@@ -175,7 +179,7 @@ export function PerformanceChart({
       }
       return { timestamp: point.timestamp, value: basketValue };
     });
-  }, [dataWithLive, weights, basket.allocations]);
+  }, [dataWithLive, weights, basket.allocations, firstValidIndex]);
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -219,16 +223,16 @@ export function PerformanceChart({
     return { width, height, padTop, chartH, getX, getY, linePath, areaPath, dateLabels };
   }, [chartData]);
 
-  // Per-token performance — memoized so hover re-renders don't redo findIndex across all data points
+  // Per-token performance — reads firstValidIndex from the shared memo (no redundant findIndex)
   const tokenPerf = useMemo(() => basket.allocations.map((alloc) => {
     const w = weights?.[alloc.mint] ?? alloc.weight;
-    const firstIdx = dataWithLive.findIndex((p) => p.prices[alloc.mint] && p.prices[alloc.mint] > 0);
+    const firstIdx = firstValidIndex[alloc.mint] ?? -1;
     const initialPrice = firstIdx !== -1 ? dataWithLive[firstIdx].prices[alloc.mint] : undefined;
     const finalPrice = dataWithLive[dataWithLive.length - 1]?.prices[alloc.mint];
     const hasData = initialPrice && initialPrice > 0 && finalPrice && finalPrice > 0;
     const change = hasData ? ((finalPrice / initialPrice) - 1) * 100 : null;
     return { symbol: alloc.symbol, weight: w, change };
-  }), [dataWithLive, weights, basket.allocations]);
+  }), [dataWithLive, weights, basket.allocations, firstValidIndex]);
 
   if (loading) {
     return (

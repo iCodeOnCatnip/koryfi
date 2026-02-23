@@ -322,9 +322,7 @@ export async function GET(req: NextRequest) {
   }
 
   const fetchPromise = (async () => {
-    const jan1Ms = Date.UTC(year, 0, 1); // midnight UTC Jan 1
-    const nowMs = Date.now();
-    const days = Math.ceil((nowMs - jan1Ms) / DAY_MS);
+    const days = Math.ceil((Date.now() - jan1Ms) / DAY_MS);
 
     // Split tokens: Pyth vs CoinGecko-only
     const pythTokens = basket.allocations.filter((a) => a.pythPriceId);
@@ -338,7 +336,7 @@ export async function GET(req: NextRequest) {
 
     if (pythTokens.length > 0) {
       const dailyTimestamps: number[] = [];
-      const nowUnix = Math.floor(nowMs / 1000);
+      const nowUnix = Math.floor(Date.now() / 1000);
       for (let d = 0; d <= days; d++) {
         const ts = Math.floor(Date.UTC(year, 0, 1 + d) / 1000);
         if (ts <= nowUnix) dailyTimestamps.push(ts);

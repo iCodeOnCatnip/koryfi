@@ -15,6 +15,12 @@ import { enforceRateLimit, MINT_REGEX } from "@/lib/server/security";
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const WSOL_MINT = "So11111111111111111111111111111111111111112";
 
+function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), 10_000);
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(t));
+}
+
 const BALANCE_TTL_MS = 20_000;
 const MAX_BALANCE_CACHE_ENTRIES = 3000;
 const balanceCache = new Map<string, { ts: number; balances: Record<string, number> }>();
@@ -55,11 +61,11 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `https://api.helius.xyz/v0/addresses/${address}/balances?api-key=${HELIUS_API_KEY}`
     );
     if (!res.ok) {
-      return NextResponse.json({ error: "Helius API error", status: res.status }, { status: res.status });
+      return NextResponse.json({ error: "Failed to fetch balances" }, { status: 502 });
     }
 
     const data: {
