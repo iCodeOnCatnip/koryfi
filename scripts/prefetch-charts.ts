@@ -91,6 +91,15 @@ async function writeUpstashChart(
   }
 }
 
+function writePublicChart(basketId: string, year: number, payload: unknown) {
+  const dir = path.join(process.cwd(), "public", "data", "charts");
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, `basket-${basketId}-${year}.json`),
+    JSON.stringify(payload)
+  );
+}
+
 // ── Pyth ─────────────────────────────────────────────────────────────────────
 
 interface PythParsed {
@@ -366,6 +375,7 @@ async function main() {
       }
       writeCache(`basket_${basket.id}`, result);
       writeCache(`basket_${basket.id}_${year}`, result);
+      writePublicChart(basket.id, year, result);
       await writeUpstashChart(basket.id, year, result);
       console.log(`  [done]  ${basket.id} — ${result.data.length} data points`);
     })

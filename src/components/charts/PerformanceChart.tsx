@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import { BasketConfig } from "@/lib/baskets/types";
+import { usePrices } from "@/hooks/usePrices";
 
 interface PriceDataPoint {
   timestamp: number;
@@ -31,14 +32,29 @@ function writeClientCache(basketId: string, data: PriceDataPoint[]) {
 }
 
 /**
- * Fetch complete basket chart data from server in ONE call.
- * Client-side: sessionStorage cache (30 min TTL) for instant tab-switching.
- * Server-side: CDN-cached (5 min) + Upstash + disk — no live fetch delay on cache hit.
+ * Fetch complete basket chart data.
+ * Priority: sessionStorage → static CDN file → dynamic API route.
+ * Live tail is overlaid client-side via usePrices() — no server round-trip.
  */
 async function fetchBasketChart(basketId: string): Promise<PriceDataPoint[]> {
   const cached = readClientCache(basketId);
   if (cached) return cached;
 
+  const year = new Date().getUTCFullYear();
+
+  // Primary: static CDN file (pre-built at deploy time, ~10–50ms from edge)
+  try {
+    const res = await fetch(`/data/charts/basket-${basketId}-${year}.json`);
+    if (res.ok) {
+      const json: { data: PriceDataPoint[] } = await res.json();
+      if (Array.isArray(json?.data) && json.data.length > 0) {
+        writeClientCache(basketId, json.data);
+        return json.data;
+      }
+    }
+  } catch { /* fall through to API */ }
+
+  // Fallback: dynamic API route (Upstash, then live fetch)
   const res = await fetch(`/api/chart?basket=${encodeURIComponent(basketId)}`);
   if (!res.ok) throw new Error(`Failed to fetch chart: ${res.status}`);
   const json: { data: PriceDataPoint[] } = await res.json();
@@ -73,6 +89,31 @@ export function PerformanceChart({
   const [error, setError] = useState<string | null>(null);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const { prices } = usePrices();
+
+  // Overlay today's live prices on the last data point so the chart tail
+  // always reflects the current price — no extra server round-trip needed.
+  const dataWithLive = useMemo(() => {
+    if (data.length === 0 || Object.keys(prices).length === 0) return data;
+    const now = Date.now();
+    const last = data[data.length - 1];
+    const tailPrices: Record<string, number> = { ...last.prices };
+    let updatedAny = false;
+    for (const alloc of basket.allocations) {
+      const live = prices[alloc.mint];
+      if (typeof live === "number" && live > 0) {
+        tailPrices[alloc.mint] = live;
+        updatedAny = true;
+      }
+    }
+    if (!updatedAny) return data;
+    const tailPoint = { timestamp: now, prices: tailPrices };
+    const result = data.slice();
+    // Replace last point if it's same-day, otherwise append
+    if (now - last.timestamp < 2 * 60 * 60_000) result[result.length - 1] = tailPoint;
+    else result.push(tailPoint);
+    return result;
+  }, [data, prices, basket.allocations]);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,7 +139,7 @@ export function PerformanceChart({
   }, [basket.id]);
 
   const chartData = useMemo(() => {
-    if (data.length === 0) return [];
+    if (dataWithLive.length === 0) return [];
     const activeWeights =
       weights ||
       Object.fromEntries(basket.allocations.map((a) => [a.mint, a.weight]));
@@ -106,7 +147,7 @@ export function PerformanceChart({
     // For each token, find the index of its first non-zero price (launch date)
     const firstValidIndex: Record<string, number> = {};
     for (const alloc of basket.allocations) {
-      const idx = data.findIndex((p) => p.prices[alloc.mint] && p.prices[alloc.mint] > 0);
+      const idx = dataWithLive.findIndex((p) => p.prices[alloc.mint] && p.prices[alloc.mint] > 0);
       if (idx !== -1) firstValidIndex[alloc.mint] = idx;
     }
 
@@ -117,7 +158,7 @@ export function PerformanceChart({
       0
     );
 
-    return data.map((point, i) => {
+    return dataWithLive.map((point, i) => {
       let basketValue = 0;
       for (const alloc of validAllocs) {
         const rawW = activeWeights[alloc.mint] ?? alloc.weight;
@@ -127,14 +168,14 @@ export function PerformanceChart({
         if (i < launchIdx) {
           basketValue += 100 * w;
         } else {
-          const initialPrice = data[launchIdx].prices[alloc.mint];
+          const initialPrice = dataWithLive[launchIdx].prices[alloc.mint];
           const currentPrice = point.prices[alloc.mint] || initialPrice;
           basketValue += 100 * w * (currentPrice / initialPrice);
         }
       }
       return { timestamp: point.timestamp, value: basketValue };
     });
-  }, [data, weights, basket.allocations]);
+  }, [dataWithLive, weights, basket.allocations]);
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -181,13 +222,13 @@ export function PerformanceChart({
   // Per-token performance — memoized so hover re-renders don't redo findIndex across all data points
   const tokenPerf = useMemo(() => basket.allocations.map((alloc) => {
     const w = weights?.[alloc.mint] ?? alloc.weight;
-    const firstIdx = data.findIndex((p) => p.prices[alloc.mint] && p.prices[alloc.mint] > 0);
-    const initialPrice = firstIdx !== -1 ? data[firstIdx].prices[alloc.mint] : undefined;
-    const finalPrice = data[data.length - 1]?.prices[alloc.mint];
+    const firstIdx = dataWithLive.findIndex((p) => p.prices[alloc.mint] && p.prices[alloc.mint] > 0);
+    const initialPrice = firstIdx !== -1 ? dataWithLive[firstIdx].prices[alloc.mint] : undefined;
+    const finalPrice = dataWithLive[dataWithLive.length - 1]?.prices[alloc.mint];
     const hasData = initialPrice && initialPrice > 0 && finalPrice && finalPrice > 0;
     const change = hasData ? ((finalPrice / initialPrice) - 1) * 100 : null;
     return { symbol: alloc.symbol, weight: w, change };
-  }), [data, weights, basket.allocations]);
+  }), [dataWithLive, weights, basket.allocations]);
 
   if (loading) {
     return (
