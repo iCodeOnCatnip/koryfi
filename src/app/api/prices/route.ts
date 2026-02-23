@@ -13,8 +13,10 @@ import { enforceRateLimit, isAllowedMint } from "@/lib/server/security";
 const HERMES_API = "https://hermes.pyth.network/v2/updates/price/latest";
 const JUPITER_PRICE_API = "https://api.jup.ag/price/v3/price";
 const COINGECKO_SIMPLE_API = "https://api.coingecko.com/api/v3/simple/price";
+const SANCTUM_SOL_VALUE_API = "https://sanctum-extra-api.ngrok.dev/v1/sol-value/many";
 const FETCH_TIMEOUT_MS = 10_000;
 const SOL_MINT = "So11111111111111111111111111111111111111112";
+// LSTs that need Sanctum sol-value lookup when Jupiter/CoinGecko fail
 const STAKED_SOL_MINTS = new Set([
   "pSo1f9nQXWgXibFtKf7NWYxb5enAM4qfP6UJSiXRQfL", // pSOL
   "he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A", // hSOL
@@ -75,6 +77,29 @@ async function fetchJupiterPrices(mints: string[]): Promise<Record<string, numbe
     }
     if (!res.ok) return {};
     return extractJupiterPrices(await res.json(), mints);
+  } catch {
+    return {};
+  }
+}
+
+// Sanctum: authoritative SOL-value per LST → convert to USD using SOL price
+async function fetchSanctumLstPrices(
+  mints: string[],
+  solUsdPrice: number
+): Promise<Record<string, number>> {
+  if (mints.length === 0 || solUsdPrice <= 0) return {};
+  try {
+    const params = new URLSearchParams();
+    for (const mint of mints) params.append("mints[]", mint);
+    const res = await fetchWithTimeout(`${SANCTUM_SOL_VALUE_API}?${params}`);
+    if (!res.ok) return {};
+    const json = (await res.json()) as { sol_values?: Record<string, number> };
+    const out: Record<string, number> = {};
+    for (const mint of mints) {
+      const solVal = json.sol_values?.[mint];
+      if (typeof solVal === "number" && solVal > 0) out[mint] = solVal * solUsdPrice;
+    }
+    return out;
   } catch {
     return {};
   }
@@ -162,17 +187,17 @@ export async function GET(req: NextRequest) {
     Object.assign(prices, cg);
   }
 
-  // Proxy fallback for staked-SOL derivatives when providers temporarily fail.
-  const solProxy =
-    prices[SOL_MINT] ||
-    prices["mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So"] || // mSOL
-    prices["J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn"];   // jitoSOL
-  if (solProxy && solProxy > 0) {
-    for (const mint of mints) {
-      if (!prices[mint] && STAKED_SOL_MINTS.has(mint)) {
-        prices[mint] = solProxy;
-      }
-    }
+  // Sanctum fallback for LSTs still missing after Jupiter + CoinGecko.
+  // Uses actual SOL-value per LST × SOL USD price — accurate, not a proxy.
+  const missingLsts = mints.filter((m) => !prices[m] && STAKED_SOL_MINTS.has(m));
+  if (missingLsts.length > 0) {
+    const solUsd =
+      prices[SOL_MINT] ||
+      prices["mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So"] ||
+      prices["J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn"] ||
+      0;
+    const sanctum = await fetchSanctumLstPrices(missingLsts, solUsd);
+    Object.assign(prices, sanctum);
   }
 
   // Last-known fallback for transient outages/rate limits.
