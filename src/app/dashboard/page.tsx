@@ -165,10 +165,12 @@ function PortfolioMetricsCard({
   investedValue,
   currentValue,
   walletBalance,
+  balancesError,
 }: {
   investedValue: number;
   currentValue: number;
   walletBalance: number | null;
+  balancesError: boolean;
 }) {
   const pnl = currentValue - investedValue;
   const pnlPct = investedValue > 0 ? (pnl / investedValue) * 100 : 0;
@@ -198,9 +200,12 @@ function PortfolioMetricsCard({
         <div className="border-t border-primary/10 pt-6">
           <p className="text-xs uppercase tracking-widest text-muted-foreground mb-3">Wallet Balance</p>
           <p className="text-2xl md:text-3xl font-mono font-semibold text-muted-foreground leading-none">
-            {walletBalance !== null ? fmtUsd(walletBalance) : (
-              <span className="text-muted-foreground text-2xl">Loading...</span>
-            )}
+            {balancesError
+              ? <span className="text-red-400 text-lg">Unable to load</span>
+              : walletBalance !== null
+                ? fmtUsd(walletBalance)
+                : <span className="text-muted-foreground text-2xl">Loading...</span>
+            }
           </p>
         </div>
 
@@ -477,6 +482,7 @@ export default function DashboardPage() {
   const [records, setRecords] = useState<PurchaseRecord[]>([]);
   const [onChainBalances, setOnChainBalances] = useState<Record<string, number> | null>(null);
   const [onChainMintPrices, setOnChainMintPrices] = useState<Record<string, number>>({});
+  const [balancesError, setBalancesError] = useState(false);
   const [historyTab, setHistoryTab] = useState<"investment" | "deposit">("investment");
   const [historyPanelHeight, setHistoryPanelHeight] = useState<number | null>(null);
   const investmentPanelRef = useRef<HTMLDivElement | null>(null);
@@ -487,16 +493,22 @@ export default function DashboardPage() {
   }, [wallet.publicKey]);
 
   useEffect(() => {
-    if (!wallet.publicKey) { setOnChainBalances(null); return; }
+    if (!wallet.publicKey) { setOnChainBalances(null); setBalancesError(false); return; }
     let cancelled = false;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000);
     fetch(`/api/balances?address=${wallet.publicKey.toString()}`, { signal: controller.signal })
-      .then((r) => r.json())
-      .then((data: { balances?: Record<string, number> }) => {
-        if (!cancelled) setOnChainBalances(data.balances ?? {});
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((data: { balances: Record<string, number> }) => {
+        if (!cancelled) { setOnChainBalances(data.balances ?? {}); setBalancesError(false); }
       })
-      .catch(() => { if (!cancelled) setOnChainBalances({}); })
+      .catch((err) => {
+        if (!cancelled) {
+          if (err?.name !== "AbortError") console.error("[balances]", err);
+          setOnChainBalances({});
+          setBalancesError(err?.name !== "AbortError");
+        }
+      })
       .finally(() => clearTimeout(timeout));
     return () => { cancelled = true; clearTimeout(timeout); controller.abort(); };
   }, [wallet.publicKey]);
@@ -512,16 +524,17 @@ export default function DashboardPage() {
       return;
     }
 
+    let cancelled = false;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000);
     fetch(`/api/prices?mints=${mints.join(",")}`, { signal: controller.signal })
-      .then((r) => r.json())
-      .then((data: { prices?: Record<string, number> }) =>
-        setOnChainMintPrices(data.prices ?? {})
-      )
-      .catch((err) => { if (err.name !== "AbortError") setOnChainMintPrices({}); })
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((data: { prices: Record<string, number> }) => {
+        if (!cancelled) setOnChainMintPrices(data.prices ?? {});
+      })
+      .catch((err) => { if (!cancelled && err?.name !== "AbortError") setOnChainMintPrices({}); })
       .finally(() => clearTimeout(timeout));
-    return () => { clearTimeout(timeout); controller.abort(); };
+    return () => { cancelled = true; clearTimeout(timeout); controller.abort(); };
   }, [onChainBalances]);
 
   const basketPositions = useMemo(
@@ -563,6 +576,7 @@ export default function DashboardPage() {
           investedValue={investedValue}
           currentValue={currentValue}
           walletBalance={walletBalance}
+          balancesError={balancesError}
         />
         <Card className="border-primary/10 bg-card">
           <CardHeader className="pb-2">
