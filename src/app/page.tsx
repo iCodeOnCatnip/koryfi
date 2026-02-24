@@ -2,10 +2,12 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { TourCarousel } from "@/components/TourCarousel";
 import { TourLink } from "@/components/TourLink";
+import { CursorTrail } from "@/components/home/CursorTrail";
 
 export default function HomePage() {
   return (
     <>
+      <CursorTrail />
       {/* Keep homepage locked to one viewport without page scroll */}
       <style>{`html, body { overflow: hidden; }`}</style>
 

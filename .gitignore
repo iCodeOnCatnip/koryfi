@@ -54,6 +54,7 @@ nul
 
 # internal dev notes
 MEMORY_*.md
+.access-redemptions.json
 
 # Claude Code internal tool config
 .claude/
