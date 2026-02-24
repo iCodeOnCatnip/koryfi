@@ -19,6 +19,7 @@ export function CursorTrail() {
     }));
     let lastMoveAt = 0;
     let visibility = 0;
+    let overText = false;
     let lastFrameAt = performance.now();
     let rafId = 0;
 
@@ -26,6 +27,12 @@ export function CursorTrail() {
       targetX = e.clientX;
       targetY = e.clientY;
       lastMoveAt = performance.now();
+      const target = e.target as HTMLElement | null;
+      overText = Boolean(
+        target?.closest(
+          "h1,h2,h3,h4,h5,h6,p,span,a,button,label,li,strong,em"
+        )
+      );
     };
 
     const animate = () => {
@@ -57,7 +64,8 @@ export function CursorTrail() {
         const el = trailRefs.current[i];
         if (!el) continue;
         const alpha = 0.48 * (1 - i / TRAIL_COUNT) * visibility;
-        el.style.opacity = `${Math.max(0, Math.min(1, alpha))}`;
+        const textFade = overText ? 0.35 : 1;
+        el.style.opacity = `${Math.max(0, Math.min(1, alpha * textFade))}`;
       }
       rafId = window.requestAnimationFrame(animate);
     };
@@ -71,7 +79,7 @@ export function CursorTrail() {
   }, []);
 
   return (
-    <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-30">
+    <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-[1]">
       {Array.from({ length: TRAIL_COUNT }).map((_, i) => {
         const scale = 1 - i / (TRAIL_COUNT + 4);
         return (
