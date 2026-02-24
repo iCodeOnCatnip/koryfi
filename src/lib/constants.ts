@@ -37,9 +37,8 @@ export const DEFAULT_SLIPPAGE_BPS = 50; // 0.5% slippage
 export const MAX_ACCOUNTS_PER_SWAP = 20;
 export const JITO_TIP_LAMPORTS = 10_000; // 0.00001 SOL
 
-export const SOLANA_RPC_URL =
-  process.env.NEXT_PUBLIC_SOLANA_RPC_URL ||
-  "https://api.mainnet-beta.solana.com";
+// Client connects via server-side proxy so HELIUS_API_KEY never appears in browser.
+export const SOLANA_RPC_URL = "/api/solana-rpc";
 
 // Fee collection wallet — override via NEXT_PUBLIC_FEE_WALLET env var if needed
 export const FEE_WALLET =
