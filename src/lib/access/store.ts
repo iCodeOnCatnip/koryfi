@@ -13,6 +13,7 @@ type RedemptionRecord = {
 type RedemptionStore = Record<string, RedemptionRecord>;
 
 const STORE_PATH = path.join(process.cwd(), ".access-redemptions.json");
+const TMP_STORE_PATH = path.join(os.tmpdir(), "koryfi-access-redemptions.json");
 const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL?.replace(/\/+$/, "");
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const REDIS_ENABLED = Boolean(REDIS_URL && REDIS_TOKEN);
@@ -42,7 +43,12 @@ async function readStore(): Promise<RedemptionStore> {
     const raw = await fs.readFile(STORE_PATH, "utf8");
     return JSON.parse(raw) as RedemptionStore;
   } catch {
-    return {};
+    try {
+      const rawTmp = await fs.readFile(TMP_STORE_PATH, "utf8");
+      return JSON.parse(rawTmp) as RedemptionStore;
+    } catch {
+      return {};
+    }
   }
 }
 
@@ -51,8 +57,7 @@ async function writeStore(store: RedemptionStore): Promise<void> {
     await fs.writeFile(STORE_PATH, JSON.stringify(store, null, 2), "utf8");
   } catch {
     // Vercel filesystem is read-only outside /tmp.
-    const tmpStorePath = path.join(os.tmpdir(), "koryfi-access-redemptions.json");
-    await fs.writeFile(tmpStorePath, JSON.stringify(store, null, 2), "utf8");
+    await fs.writeFile(TMP_STORE_PATH, JSON.stringify(store, null, 2), "utf8");
   }
 }
 
@@ -95,13 +100,17 @@ export async function getRedemptionByFingerprint(
 ): Promise<RedemptionRecord | null> {
   const fingerprintHash = hashFingerprint(fingerprint);
   if (REDIS_ENABLED) {
-    const code = (await redisCommand(["GET", redisFingerprintKey(fingerprintHash)])) as
-      | string
-      | null;
-    if (!code) return null;
-    const raw = (await redisCommand(["GET", redisCodeKey(code)])) as string | null;
-    if (!raw) return null;
-    return JSON.parse(raw) as RedemptionRecord;
+    try {
+      const code = (await redisCommand(["GET", redisFingerprintKey(fingerprintHash)])) as
+        | string
+        | null;
+      if (!code) return null;
+      const raw = (await redisCommand(["GET", redisCodeKey(code)])) as string | null;
+      if (!raw) return null;
+      return JSON.parse(raw) as RedemptionRecord;
+    } catch {
+      // Fall through to local fallback when Redis is unavailable/misconfigured.
+    }
   }
 
   const store = await readStore();
@@ -130,25 +139,29 @@ export async function redeemCode(params: {
   const fingerprintHash = hashFingerprint(params.fingerprint);
 
   if (REDIS_ENABLED) {
-    const existingRaw = (await redisCommand(["GET", redisCodeKey(code)])) as string | null;
-    if (existingRaw) {
-      const existingRecord = JSON.parse(existingRaw) as RedemptionRecord;
-      if (existingRecord.fingerprintHash === fingerprintHash) {
-        return { ok: true, record: existingRecord, reused: true };
+    try {
+      const existingRaw = (await redisCommand(["GET", redisCodeKey(code)])) as string | null;
+      if (existingRaw) {
+        const existingRecord = JSON.parse(existingRaw) as RedemptionRecord;
+        if (existingRecord.fingerprintHash === fingerprintHash) {
+          return { ok: true, record: existingRecord, reused: true };
+        }
+        return { ok: false, reason: "already_used" };
       }
-      return { ok: false, reason: "already_used" };
+
+      const record: RedemptionRecord = {
+        code,
+        fingerprintHash,
+        ip: params.ip,
+        redeemedAt: new Date().toISOString(),
+      };
+
+      await redisCommand(["SET", redisCodeKey(code), JSON.stringify(record)]);
+      await redisCommand(["SET", redisFingerprintKey(fingerprintHash), code]);
+      return { ok: true, record, reused: false };
+    } catch {
+      // Fall through to local fallback when Redis is unavailable/misconfigured.
     }
-
-    const record: RedemptionRecord = {
-      code,
-      fingerprintHash,
-      ip: params.ip,
-      redeemedAt: new Date().toISOString(),
-    };
-
-    await redisCommand(["SET", redisCodeKey(code), JSON.stringify(record)]);
-    await redisCommand(["SET", redisFingerprintKey(fingerprintHash), code]);
-    return { ok: true, record, reused: false };
   }
 
   if (existing) {
