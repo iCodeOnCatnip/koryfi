@@ -53,11 +53,12 @@ export default function RootLayout({
         className={`${interSans.variable} ${geistMono.variable} ${koltav.variable} ${titilliumWeb.variable} ${spaceGrotesk.variable} antialiased min-h-screen bg-background`}
       >
         <Providers>
-          <header
-            className="sticky top-0 z-50 border-b bg-transparent backdrop-blur-sm"
-            style={{ borderBottomColor: "#1F2A22" }}
-          >
-            <div className="container mx-auto px-4 h-16 flex items-center justify-between">
+          <header className="fixed inset-x-0 top-4 z-50 px-4">
+            <div
+              className="mx-auto h-16 w-full max-w-5xl rounded-full border border-white/25 bg-white/[0.05] backdrop-blur-[10px] shadow-[inset_0_1px_0_rgba(255,255,255,0.35),0_10px_30px_rgba(0,0,0,0.35)]"
+              style={{ WebkitBackdropFilter: "blur(10px)" }}
+            >
+              <div className="h-full px-6 flex items-center justify-between">
               <Link href="/" className="flex items-center gap-2 hover:opacity-90 transition-opacity">
                 <div
                   className="w-8 h-8 rounded-lg flex items-center justify-center"
@@ -82,9 +83,10 @@ export default function RootLayout({
                 </span>
               </Link>
               <HeaderNav />
+              </div>
             </div>
           </header>
-          <main className="container mx-auto px-4 py-8">{children}</main>
+          <main className="relative z-10 container mx-auto px-4 pt-28 pb-8">{children}</main>
         </Providers>
       </body>
     </html>

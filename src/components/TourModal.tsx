@@ -6,13 +6,7 @@ import { TourCarousel } from "@/components/TourCarousel";
 
 export function TourModal({ ready = true }: { ready?: boolean }) {
   const [open, setOpen] = useState(false);
-  const [mounted, setMounted] = useState(false);
   const shouldOpen = useRef(false);
-
-  // Track client mount for portal (document not available on server)
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   // On mount: check sessionStorage for the tour flag and clear it immediately
   useEffect(() => {
@@ -29,7 +23,7 @@ export function TourModal({ ready = true }: { ready?: boolean }) {
     return () => clearTimeout(id);
   }, [ready]);
 
-  if (!open || !mounted) return null;
+  if (!open || typeof document === "undefined") return null;
 
   // Portal to document.body bypasses all stacking contexts in <main>
   return createPortal(
@@ -41,7 +35,7 @@ export function TourModal({ ready = true }: { ready?: boolean }) {
       />
 
       {/* Modal card — 2:1 ratio (2800x1400) */}
-      <div className="relative z-10 w-[min(96vw,1400px)] aspect-[2/1] overflow-hidden rounded-2xl border border-primary/20 bg-card shadow-2xl shadow-black/40">
+      <div className="relative z-10 w-[min(99.5vw,1760px)] aspect-[2/1] overflow-hidden rounded-2xl border border-primary/20 bg-card shadow-2xl shadow-black/40">
         {/* Close button */}
         <button
           onClick={() => setOpen(false)}

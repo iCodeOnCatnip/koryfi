@@ -7,12 +7,16 @@ export function TourLink() {
   return (
     <button
       onClick={() => {
-        try { sessionStorage.setItem("openTour", "1"); } catch { /* private browsing */ }
+        try {
+          sessionStorage.setItem("openTour", "1");
+        } catch {
+          /* private browsing */
+        }
         router.push("/baskets");
       }}
       className="text-lg md:text-xl font-normal text-foreground hover:text-primary transition-colors active:scale-[0.97] active:brightness-90 whitespace-nowrap cursor-pointer"
     >
-      Take a tour →
+      {"Take a tour \u2192"}
     </button>
   );
 }
