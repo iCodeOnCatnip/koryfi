@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 const FINGERPRINT_KEY = "koryfi_access_fingerprint_v1";
+const ACCESS_GRANTED_KEY = "koryfi_access_granted_v1";
 
 function getOrCreateFingerprint(): string {
   const existing = localStorage.getItem(FINGERPRINT_KEY);
@@ -24,6 +25,14 @@ export function BasketsAccessGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let active = true;
+    const hasLocalGrant =
+      typeof window !== "undefined" &&
+      localStorage.getItem(ACCESS_GRANTED_KEY) === "1";
+    if (hasLocalGrant) {
+      setAllowed(true);
+      setReady(true);
+    }
+
     (async () => {
       try {
         const fingerprint = getOrCreateFingerprint();
@@ -34,12 +43,19 @@ export function BasketsAccessGate({ children }: { children: React.ReactNode }) {
         });
         const data = (await res.json()) as { allowed?: boolean };
         if (!active) return;
-        setAllowed(Boolean(data.allowed));
+        if (data.allowed) {
+          setAllowed(true);
+          localStorage.setItem(ACCESS_GRANTED_KEY, "1");
+        } else if (!hasLocalGrant) {
+          setAllowed(false);
+        }
       } catch {
         if (!active) return;
-        setError("Unable to verify access right now.");
+        if (!hasLocalGrant) {
+          setError("Unable to verify access right now.");
+        }
       } finally {
-        if (active) setReady(true);
+        if (active && !hasLocalGrant) setReady(true);
       }
     })();
     return () => {
@@ -63,6 +79,7 @@ export function BasketsAccessGate({ children }: { children: React.ReactNode }) {
         return;
       }
       setAllowed(true);
+      localStorage.setItem(ACCESS_GRANTED_KEY, "1");
       setCode("");
     } catch {
       setError("Could not redeem code. Try again.");
