@@ -10,17 +10,13 @@ function getHeliusRpcUrl(): string | null {
   return `https://mainnet.helius-rpc.com/?api-key=${key}`;
 }
 
+const PUBLIC_RPC_FALLBACK = "https://api.mainnet-beta.solana.com";
+
 export async function POST(req: NextRequest) {
   const rateLimited = enforceRateLimit(req, "api:solana-rpc", 300, 60_000);
   if (rateLimited) return rateLimited;
 
   const heliusUrl = getHeliusRpcUrl();
-  if (!heliusUrl) {
-    return NextResponse.json(
-      { error: "HELIUS_API_KEY is not configured on server" },
-      { status: 500 }
-    );
-  }
 
   let payload: unknown;
   try {
@@ -30,12 +26,20 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const upstream = await fetch(heliusUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      cache: "no-store",
-    });
+    const forward = async (url: string) =>
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        cache: "no-store",
+      });
+
+    let upstream = await forward(heliusUrl ?? PUBLIC_RPC_FALLBACK);
+    if (heliusUrl && (upstream.status === 401 || upstream.status === 403)) {
+      // Misconfigured/expired server key: degrade gracefully instead of hard-failing swaps.
+      upstream = await forward(PUBLIC_RPC_FALLBACK);
+    }
+
     const text = await upstream.text();
     return new NextResponse(text, {
       status: upstream.status,
