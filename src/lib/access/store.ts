@@ -60,21 +60,22 @@ async function redisCommand(parts: (string | number)[]): Promise<unknown> {
   if (!REDIS_URL || !REDIS_TOKEN) {
     throw new Error("Redis not configured");
   }
-  const res = await fetch(REDIS_URL, {
+  const res = await fetch(`${REDIS_URL}/pipeline`, {
     method: "POST",
     headers: {
+      Accept: "application/json",
       Authorization: `Bearer ${REDIS_TOKEN}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(parts),
+    body: JSON.stringify([parts]),
     cache: "no-store",
   });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Redis command failed: ${res.status} ${text}`);
   }
-  const data = (await res.json()) as { result?: unknown };
-  return data.result;
+  const data = (await res.json()) as Array<{ result?: unknown }>;
+  return data?.[0]?.result;
 }
 
 function redisCodeKey(code: string): string {
