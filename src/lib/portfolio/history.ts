@@ -104,9 +104,21 @@ export async function getPurchaseRecordsSynced(
     );
     if (!res.ok) return localRecords;
     const data = (await res.json()) as { records?: PurchaseRecord[] };
-    const merged = mergeRecords(localRecords, data.records ?? []);
+    const serverRecords = data.records ?? [];
+    const merged = mergeRecords(localRecords, serverRecords);
     if (typeof window !== "undefined") {
       localStorage.setItem(storageKey(walletPubkey), JSON.stringify(merged));
+    }
+    // Backfill any local-only records that never made it to the server.
+    const serverIds = new Set(serverRecords.map((r) => r.id));
+    const localOnly = localRecords.filter((r) => !serverIds.has(r.id));
+    for (const record of localOnly) {
+      void fetch("/api/purchase-history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: walletPubkey, record }),
+        keepalive: true,
+      }).catch(() => {});
     }
     return merged;
   } catch {
