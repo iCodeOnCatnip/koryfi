@@ -10,6 +10,7 @@ import { usePrices } from "@/hooks/usePrices";
 import {
   getCustomWeights,
   getPurchaseRecords,
+  getPurchaseRecordsSynced,
   savePurchaseRecord,
   getVisibleSwapSignatures,
   PURCHASE_SAVED_EVENT,
@@ -227,6 +228,12 @@ function TxHistory({
   useEffect(() => {
     if (!walletPubkey) { setRecords([]); return; }
     setRecords(loadRecords(walletPubkey));
+    let cancelled = false;
+    void getPurchaseRecordsSynced(walletPubkey).then((synced) => {
+      if (cancelled) return;
+      setRecords(synced.filter((r) => r.basketId === basketId).sort((a, b) => b.timestamp - a.timestamp));
+    });
+    return () => { cancelled = true; };
   }, [walletPubkey, basketId]);
 
   useEffect(() => {
