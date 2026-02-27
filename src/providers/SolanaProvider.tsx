@@ -24,8 +24,17 @@ export function SolanaProvider({ children }: { children: ReactNode }) {
     return "https://api.mainnet-beta.solana.com";
   }, []);
 
+  const config = useMemo(
+    () => ({
+      commitment: "confirmed" as const,
+      // Keep WS on a real Solana RPC endpoint. The local HTTP proxy does not expose Solana WS.
+      wsEndpoint: "wss://api.mainnet-beta.solana.com",
+    }),
+    []
+  );
+
   return (
-    <ConnectionProvider endpoint={endpoint}>
+    <ConnectionProvider endpoint={endpoint} config={config}>
       <WalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>{children}</WalletModalProvider>
       </WalletProvider>

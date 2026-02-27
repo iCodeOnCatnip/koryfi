@@ -55,6 +55,7 @@ nul
 # internal dev notes
 MEMORY_*.md
 .access-redemptions.json
+.purchase-history.json
 ACCESS_CODES_LOCAL_*.txt
 
 # Claude Code internal tool config

@@ -47,11 +47,13 @@ export default function HomePage() {
           </div>
         </section>
 
-        <section id="tour" className="mt-[clamp(0.65rem,2vh,1.5rem)] flex-1 min-h-0">
-          <div className="relative h-full aspect-[2/1] max-w-full mx-auto overflow-hidden rounded-3xl border border-border/80 bg-card/60 backdrop-blur-[14px] shadow-[0_0_0_1px_rgba(0,196,140,0.08),0_20px_50px_rgba(0,0,0,0.35)]">
-            <TourCarousel />
-          </div>
-        </section>
+        {false && (
+          <section id="tour" className="mt-[clamp(0.65rem,2vh,1.5rem)] flex-1 min-h-0">
+            <div className="relative h-full aspect-[2/1] max-w-full mx-auto overflow-hidden rounded-3xl border border-border/80 bg-card/60 backdrop-blur-[14px] shadow-[0_0_0_1px_rgba(0,196,140,0.08),0_20px_50px_rgba(0,0,0,0.35)]">
+              <TourCarousel />
+            </div>
+          </section>
+        )}
       </div>
     </>
   );

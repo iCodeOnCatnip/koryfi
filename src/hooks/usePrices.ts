@@ -16,6 +16,7 @@ type PriceSnapshot = {
 };
 
 const subscribers = new Set<(snapshot: PriceSnapshot) => void>();
+const activePollingSubscribers = new Set<(snapshot: PriceSnapshot) => void>();
 let sharedPrices: Record<string, number> = {};
 let sharedLoading = true;
 let pollHandle: ReturnType<typeof setInterval> | null = null;
@@ -56,12 +57,20 @@ function ensurePolling() {
 }
 
 function maybeStopPolling() {
-  if (subscribers.size > 0 || !pollHandle) return;
+  if (activePollingSubscribers.size > 0 || !pollHandle) return;
   clearInterval(pollHandle);
   pollHandle = null;
 }
 
-export function usePrices() {
+function syncPollingState() {
+  if (activePollingSubscribers.size > 0) {
+    ensurePolling();
+    return;
+  }
+  maybeStopPolling();
+}
+
+export function usePrices({ paused = false }: { paused?: boolean } = {}) {
   const [snapshot, setSnapshot] = useState<PriceSnapshot>({
     prices: sharedPrices,
     loading: sharedLoading,
@@ -69,13 +78,15 @@ export function usePrices() {
 
   useEffect(() => {
     subscribers.add(setSnapshot);
-    ensurePolling();
+    if (!paused) activePollingSubscribers.add(setSnapshot);
+    syncPollingState();
 
     return () => {
       subscribers.delete(setSnapshot);
+      activePollingSubscribers.delete(setSnapshot);
       maybeStopPolling();
     };
-  }, []);
+  }, [paused]);
 
   const refetch = useCallback(async () => {
     await refreshPrices();

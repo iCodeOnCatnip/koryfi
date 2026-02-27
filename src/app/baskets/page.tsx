@@ -1,12 +1,16 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useRouter } from "next/navigation";
 import { BASKETS, getBasketById } from "@/lib/baskets/config";
 import { PurchaseRecord } from "@/lib/baskets/types";
-import { getPurchaseRecords, savePurchaseRecord } from "@/lib/portfolio/history";
-import { getSwapPreview, executeBasketBuy } from "@/lib/swap/swapExecutor";
+import {
+  getPurchaseRecords,
+  savePurchaseRecord,
+  getVisibleSwapSignatures,
+} from "@/lib/portfolio/history";
+import { getSwapPreview, executeBasketBuy, SwapPreview } from "@/lib/swap/swapExecutor";
 import { DEFAULT_SLIPPAGE_BPS, USDC_MINT } from "@/lib/constants";
 import { BasketCard } from "@/components/baskets/BasketCard";
 import { usePrices } from "@/hooks/usePrices";
@@ -25,6 +29,9 @@ export default function Home() {
     "idle" | "quoting" | "signing" | "submitting" | "success" | "error"
   >("idle");
   const [redoError, setRedoError] = useState<string | null>(null);
+  const [redoPreview, setRedoPreview] = useState<SwapPreview | null>(null);
+  const [redoPreviewLoading, setRedoPreviewLoading] = useState(false);
+  const [redoPreviewError, setRedoPreviewError] = useState<string | null>(null);
 
   const lastPurchase = useMemo<PurchaseRecord | null>(() => {
     if (!wallet.publicKey) return null;
@@ -37,6 +44,47 @@ export default function Home() {
     () => (lastPurchase ? getBasketById(lastPurchase.basketId) : undefined),
     [lastPurchase]
   );
+
+  useEffect(() => {
+    if (!showRedoModal || !lastPurchase || !lastBasket) {
+      queueMicrotask(() => {
+        setRedoPreview(null);
+        setRedoPreviewError(null);
+        setRedoPreviewLoading(false);
+      });
+      return;
+    }
+
+    let cancelled = false;
+    queueMicrotask(() => {
+      setRedoPreviewLoading(true);
+      setRedoPreviewError(null);
+    });
+    void getSwapPreview(
+      lastBasket,
+      lastPurchase.usdcInvested,
+      lastPurchase.weights,
+      DEFAULT_SLIPPAGE_BPS,
+      USDC_MINT
+    )
+      .then((preview) => {
+        if (cancelled) return;
+        setRedoPreview(preview);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setRedoPreview(null);
+        setRedoPreviewError(err instanceof Error ? err.message : "Failed to fetch estimated output");
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setRedoPreviewLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showRedoModal, lastPurchase, lastBasket]);
 
   return (
     <BasketsAccessGate>
@@ -126,138 +174,220 @@ export default function Home() {
                 className="absolute top-3 right-3 text-muted-foreground hover:text-foreground active:scale-[0.97] active:brightness-90 transition-all cursor-pointer"
                 onClick={() => setShowRedoModal(false)}
               >
-                X
+                ×
               </button>
-              <h4 className="text-lg font-semibold mb-2">Redo your last buy</h4>
-              <p className="text-xs text-muted-foreground mb-4">
-                Review the details of your most recent basket purchase. You can jump
-                back to this basket and reuse the same configuration.
-              </p>
-
-              <div className="space-y-2 mb-4 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Basket</span>
-                  <span className="font-medium">{lastBasket.name}</span>
+              {redoStatus === "success" ? (
+                <div className="py-10 text-center space-y-3">
+                  <p className="text-3xl font-semibold text-primary">Investment successful</p>
+                  <p className="text-sm text-muted-foreground">You may close the window.</p>
+                  <button
+                    type="button"
+                    className="mt-6 w-full rounded-md bg-[#00C48C] text-black py-2.5 text-sm font-medium hover:opacity-90 active:scale-[0.97] active:brightness-90 transition-all cursor-pointer"
+                    onClick={() => {
+                      setShowRedoModal(false);
+                      router.push("/dashboard");
+                    }}
+                  >
+                    Go to history
+                  </button>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Amount invested</span>
-                  <span className="font-mono">
-                    {lastPurchase.usdcInvested.toFixed(2)} USDC
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">When</span>
-                  <span className="text-xs font-mono">
-                    {new Date(lastPurchase.timestamp).toLocaleString()}
-                  </span>
-                </div>
-              </div>
+              ) : (
+                <>
+                  <h4 className="text-lg font-semibold mb-2">Redo your last buy</h4>
+                  <p className="text-xs text-muted-foreground mb-4">
+                    Review the details of your most recent basket purchase. You can jump
+                    back to this basket and reuse the same configuration.
+                  </p>
 
-              <div className="mb-4">
-                <span className="text-xs text-muted-foreground">Weights used</span>
-                <div className="mt-1 grid grid-cols-2 gap-1 text-xs">
-                  {Object.entries(lastPurchase.weights).map(([mint, w]) => {
-                    const alloc = lastBasket.allocations.find((a) => a.mint === mint);
-                    if (!alloc) return null;
-                    return (
-                      <div key={mint} className="flex items-center justify-between">
-                        <span>{alloc.symbol}</span>
-                        <span className="font-mono">{w}%</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+                  <div className="space-y-2 mb-4 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Basket</span>
+                      <span className="font-medium">{lastBasket.name}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Amount invested</span>
+                      <span className="font-mono">
+                        {lastPurchase.usdcInvested.toFixed(2)} USDC
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">When</span>
+                      <span className="text-xs font-mono">
+                        {new Date(lastPurchase.timestamp).toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
 
-              {redoError && <p className="text-xs text-destructive mb-2">{redoError}</p>}
+                  <div className="mb-4">
+                    <span className="text-xs text-muted-foreground">Weights used</span>
+                    <div className="mt-1 grid grid-cols-2 gap-1 text-xs">
+                      {Object.entries(lastPurchase.weights).map(([mint, w]) => {
+                        const alloc = lastBasket.allocations.find((a) => a.mint === mint);
+                        if (!alloc) return null;
+                        return (
+                          <div key={mint} className="flex items-center justify-between">
+                            <span>{alloc.symbol}</span>
+                            <span className="font-mono">{w}%</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
 
-              <div className="mt-4 flex flex-col sm:flex-row gap-2">
-                <button
-                  type="button"
-                  className="flex-1 rounded-md bg-[#00C48C] text-black py-2 text-sm font-medium hover:opacity-90 active:scale-[0.97] active:brightness-90 transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
-                  disabled={
-                    !wallet.publicKey ||
-                    !wallet.signAllTransactions ||
-                    redoStatus === "quoting" ||
-                    redoStatus === "signing" ||
-                    redoStatus === "submitting"
-                  }
-                  onClick={async () => {
-                    if (!wallet.publicKey || !wallet.signAllTransactions) return;
-                    setRedoStatus("quoting");
-                    setRedoError(null);
-                    try {
-                      const preview = await getSwapPreview(
-                        lastBasket,
-                        lastPurchase.usdcInvested,
-                        lastPurchase.weights,
-                        DEFAULT_SLIPPAGE_BPS,
-                        USDC_MINT
-                      );
-                      setRedoStatus("signing");
-                      const result = await executeBasketBuy(
-                        connection,
-                        {
-                          publicKey: wallet.publicKey,
-                          signAllTransactions: wallet.signAllTransactions,
-                        },
-                        preview.quotes,
-                        preview.totalFeeAmount
-                      );
-                      if (result.success) {
-                        const totalWeight =
-                          Object.values(lastPurchase.weights).reduce((s, v) => s + v, 0) || 100;
-                        savePurchaseRecord(wallet.publicKey.toString(), {
-                          id: crypto.randomUUID(),
-                          basketId: lastBasket.id,
-                          timestamp: Date.now(),
-                          usdcInvested: preview.netInputAmount,
-                          weights: lastPurchase.weights,
-                          allocations: preview.allocations.map((a) => ({
-                            mint: a.mint,
-                            symbol: a.symbol,
-                            ratio: (lastPurchase.weights[a.mint] ?? 0) / totalWeight,
-                            priceAtPurchase: prices[a.mint] ?? 0,
-                          })),
-                          bundleId: result.bundleId || "",
-                          txSignatures: result.txSignatures || [],
-                        });
-                        setRedoStatus("success");
-                        setShowRedoModal(false);
-                      } else {
-                        setRedoStatus("error");
-                        setRedoError(result.error || "Transaction failed");
+                  <div className="mb-4">
+                    <span className="text-xs text-muted-foreground">Estimated output</span>
+                    <div className="mt-1 space-y-1 text-xs">
+                      {redoPreviewLoading && (
+                        <p className="text-muted-foreground">Loading estimates...</p>
+                      )}
+                      {redoPreviewError && (
+                        <p className="text-destructive">{redoPreviewError}</p>
+                      )}
+                      {!redoPreviewLoading &&
+                        !redoPreviewError &&
+                        redoPreview &&
+                        redoPreview.allocations.map((alloc) => {
+                          const token = lastBasket.allocations.find((a) => a.mint === alloc.mint);
+                          const decimals = token?.decimals ?? 6;
+                          const outputNum = parseFloat(alloc.estimatedOutput) / 10 ** decimals;
+                          return (
+                            <div key={alloc.mint} className="flex items-center justify-between">
+                              <span className="text-muted-foreground">
+                                {alloc.inputAmount.toFixed(2)} USDC{" -> "}{alloc.symbol}
+                              </span>
+                              <span className="font-mono">
+                                {Number.isFinite(outputNum)
+                                  ? outputNum.toLocaleString(undefined, { maximumFractionDigits: 6 })
+                                  : "-"}
+                              </span>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+
+                  {redoError && <p className="text-xs text-destructive mb-2">{redoError}</p>}
+
+                  <div className="mt-4 flex flex-col sm:flex-row gap-2">
+                    <button
+                      type="button"
+                      className="flex-1 rounded-md bg-[#00C48C] text-black py-2 text-sm font-medium hover:opacity-90 active:scale-[0.97] active:brightness-90 transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                      disabled={
+                        !wallet.publicKey ||
+                        !wallet.signAllTransactions ||
+                        redoStatus === "quoting" ||
+                        redoStatus === "signing" ||
+                        redoStatus === "submitting"
                       }
-                    } catch (err) {
-                      setRedoStatus("error");
-                      setRedoError(
-                        err instanceof Error
-                          ? err.message
-                          : "Failed to redo last buy"
-                      );
-                    }
-                  }}
-                >
-                  {redoStatus === "quoting"
-                    ? "Preparing quote..."
-                    : redoStatus === "signing"
-                    ? "Signing transactions..."
-                    : redoStatus === "submitting"
-                    ? "Submitting..."
-                    : "Confirm and invest"}
-                </button>
+                      onClick={async () => {
+                        if (!wallet.publicKey || !wallet.signAllTransactions) return;
+                        setRedoStatus("quoting");
+                        setRedoError(null);
+                        try {
+                          const preview =
+                            redoPreview ??
+                            (await getSwapPreview(
+                              lastBasket,
+                              lastPurchase.usdcInvested,
+                              lastPurchase.weights,
+                              DEFAULT_SLIPPAGE_BPS,
+                              USDC_MINT
+                            ));
+                          setRedoStatus("signing");
+                          const result = await executeBasketBuy(
+                            connection,
+                            {
+                              publicKey: wallet.publicKey,
+                              signAllTransactions: wallet.signAllTransactions,
+                            },
+                            preview.quotes,
+                            preview.totalFeeAmount
+                          );
+                          if (result.success) {
+                            const totalWeight =
+                              Object.values(lastPurchase.weights).reduce((s, v) => s + v, 0) || 100;
+                            savePurchaseRecord(wallet.publicKey.toString(), {
+                              id: crypto.randomUUID(),
+                              basketId: lastBasket.id,
+                              timestamp: Date.now(),
+                              usdcInvested: preview.netInputAmount,
+                              weights: lastPurchase.weights,
+                              allocations: preview.allocations.map((a) => ({
+                                mint: a.mint,
+                                symbol: a.symbol,
+                                ratio: (lastPurchase.weights[a.mint] ?? 0) / totalWeight,
+                                priceAtPurchase: prices[a.mint] ?? 0,
+                              })),
+                              bundleId: result.bundleId || "",
+                              txSignatures: getVisibleSwapSignatures({
+                                txSignatures: result.txSignatures || [],
+                                allocations: preview.allocations,
+                              }),
+                            });
+                            setRedoStatus("success");
+                          } else {
+                            setRedoStatus("error");
+                            setRedoError(result.error || "Transaction failed");
+                          }
+                        } catch (err) {
+                          setRedoStatus("error");
+                          setRedoError(
+                            err instanceof Error
+                              ? err.message
+                              : "Failed to redo last buy"
+                          );
+                        }
+                      }}
+                    >
+                      {redoStatus === "quoting" ||
+                      redoStatus === "signing" ||
+                      redoStatus === "submitting" ? (
+                        <span className="inline-flex items-center gap-2">
+                          <svg
+                            className="h-4 w-4 animate-spin"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            aria-hidden="true"
+                          >
+                            <circle
+                              cx="12"
+                              cy="12"
+                              r="10"
+                              stroke="currentColor"
+                              strokeOpacity="0.25"
+                              strokeWidth="3"
+                            />
+                            <path
+                              d="M22 12a10 10 0 0 0-10-10"
+                              stroke="currentColor"
+                              strokeWidth="3"
+                              strokeLinecap="round"
+                            />
+                          </svg>
+                          {redoStatus === "quoting"
+                            ? "Preparing quote..."
+                            : redoStatus === "signing"
+                            ? "Signing transactions..."
+                            : "Submitting..."}
+                        </span>
+                      ) : (
+                        "Confirm and invest"
+                      )}
+                    </button>
 
-                <button
-                  type="button"
-                  className="flex-1 rounded-md border border-primary/40 text-primary py-2 text-sm font-medium hover:bg-primary/10 active:scale-[0.97] active:brightness-90 transition-all cursor-pointer"
-                  onClick={() => {
-                    setShowRedoModal(false);
-                    router.push(`/basket/${lastBasket.id}`);
-                  }}
-                >
-                  Go to basket
-                </button>
-              </div>
+                    <button
+                      type="button"
+                      className="flex-1 rounded-md border border-primary/40 text-primary py-2 text-sm font-medium hover:bg-primary/10 active:scale-[0.97] active:brightness-90 transition-all cursor-pointer"
+                      onClick={() => {
+                        setShowRedoModal(false);
+                        router.push(`/basket/${lastBasket.id}`);
+                      }}
+                    >
+                      Go to basket
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}

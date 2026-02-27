@@ -53,9 +53,9 @@ export default function RootLayout({
         className={`${interSans.variable} ${geistMono.variable} ${koltav.variable} ${titilliumWeb.variable} ${spaceGrotesk.variable} antialiased min-h-screen bg-background`}
       >
         <Providers>
-          <header className="fixed inset-x-0 top-4 z-50 px-4">
+          <header className="fixed inset-x-0 top-4 z-50 px-4 pointer-events-none">
             <div
-              className="mx-auto h-16 w-full max-w-5xl rounded-full border border-white/25 bg-white/[0.05] backdrop-blur-[10px] shadow-[inset_0_1px_0_rgba(255,255,255,0.35),0_10px_30px_rgba(0,0,0,0.35)]"
+              className="mx-auto h-16 w-full max-w-5xl rounded-full border border-white/25 bg-white/[0.05] backdrop-blur-[10px] shadow-[inset_0_1px_0_rgba(255,255,255,0.35),0_10px_30px_rgba(0,0,0,0.35)] pointer-events-auto"
               style={{ WebkitBackdropFilter: "blur(10px)" }}
             >
               <div className="h-full px-6 flex items-center justify-between">

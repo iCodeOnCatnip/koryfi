@@ -2,7 +2,11 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { getPurchaseRecords } from "@/lib/portfolio/history";
+import {
+  getPurchaseRecords,
+  getPurchaseRecordsSynced,
+  getVisibleSwapSignatures,
+} from "@/lib/portfolio/history";
 import { BASKETS, getBasketById } from "@/lib/baskets/config";
 import { PurchaseRecord } from "@/lib/baskets/types";
 import { usePrices } from "@/hooks/usePrices";
@@ -255,7 +259,8 @@ function InvestmentTransactionsHistory({ records }: { records: PurchaseRecord[] 
           const isExpanded = expandedId === record.id;
           const basket = BASKETS.find((b) => b.id === record.basketId);
           const date = new Date(record.timestamp);
-          const hasTxSignatures = record.txSignatures && record.txSignatures.length > 0;
+          const visibleSignatures = getVisibleSwapSignatures(record);
+          const hasTxSignatures = visibleSignatures.length > 0;
           const hasBundleId = record.bundleId && record.bundleId.length > 0;
 
           return (
@@ -348,15 +353,20 @@ function InvestmentTransactionsHistory({ records }: { records: PurchaseRecord[] 
                               />
                             )}
                             <span>{token.symbol}</span>
-                            <span className="text-xs text-muted-foreground">
-                              ({(token.ratio * 100).toFixed(1)}%)
-                            </span>
                           </div>
-                          <span className="font-mono text-sm">
-                            {token.priceAtPurchase > 0
-                              ? `@ $${token.priceAtPurchase.toLocaleString(undefined, { maximumFractionDigits: 4 })}`
-                              : "â€”"}
-                          </span>
+                          <div className="text-right font-mono text-sm">
+                            <span>
+                              {(token.ratio * 100).toFixed(1)}% (${(record.usdcInvested * token.ratio).toLocaleString(undefined, {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })})
+                            </span>
+                            {token.priceAtPurchase > 0 && (
+                              <span className="text-muted-foreground ml-2">
+                                @ ${token.priceAtPurchase.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       );
                     })}
@@ -390,40 +400,29 @@ function InvestmentTransactionsHistory({ records }: { records: PurchaseRecord[] 
                         </a>
                       )}
 
-                      {hasTxSignatures && (() => {
-                        // If there are more txes than token allocations, tx[0] is
-                        // the platform fee transfer; the rest are token swaps.
-                        const hasFeeAtIndex0 = record.txSignatures.length > record.allocations.length;
-                        let swapCounter = 0;
-                        return record.txSignatures.map((sig, i) => {
-                          const isFee = hasFeeAtIndex0 && i === 0;
-                          if (!isFee) swapCounter++;
-                          return (
-                            <a
-                              key={sig}
-                              href={`https://solscan.io/tx/${sig}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex items-center justify-between text-sm py-1 px-2 rounded-lg hover:bg-primary/5 transition-colors group"
-                            >
-                              <div className="flex items-center gap-2">
-                                <div className="w-1.5 h-1.5 rounded-full bg-primary/60" />
-                                <span className="text-muted-foreground">
-                                  {isFee ? "Platform Fee" : `Swap Txn ${swapCounter}`}
-                                </span>
-                              </div>
-                              <span className="font-mono text-xs text-muted-foreground group-hover:text-primary transition-colors">
-                                {sig.slice(0, 12)}...
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="inline ml-1">
-                                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                                  <polyline points="15 3 21 3 21 9" />
-                                  <line x1="10" y1="14" x2="21" y2="3" />
-                                </svg>
-                              </span>
-                            </a>
-                          );
-                        });
-                      })()}
+                      {hasTxSignatures &&
+                        visibleSignatures.map((sig, i) => (
+                          <a
+                            key={sig}
+                            href={`https://solscan.io/tx/${sig}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center justify-between text-sm py-1 px-2 rounded-lg hover:bg-primary/5 transition-colors group"
+                          >
+                            <div className="flex items-center gap-2">
+                              <div className="w-1.5 h-1.5 rounded-full bg-primary/60" />
+                              <span className="text-muted-foreground">Swap {i + 1}</span>
+                            </div>
+                            <span className="font-mono text-xs text-muted-foreground group-hover:text-primary transition-colors">
+                              {sig.slice(0, 12)}...
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="inline ml-1">
+                                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                                <polyline points="15 3 21 3 21 9" />
+                                <line x1="10" y1="14" x2="21" y2="3" />
+                              </svg>
+                            </span>
+                          </a>
+                        ))}
                     </div>
                   )}
                 </div>
@@ -488,7 +487,15 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!wallet.publicKey) { setRecords([]); return; }
-    setRecords(getPurchaseRecords(wallet.publicKey.toString()));
+    const walletKey = wallet.publicKey.toString();
+    setRecords(getPurchaseRecords(walletKey));
+    let cancelled = false;
+    void getPurchaseRecordsSynced(walletKey).then((synced) => {
+      if (!cancelled) setRecords(synced);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [wallet.publicKey]);
 
   useEffect(() => {

@@ -1,20 +1,26 @@
 "use client";
 
 import { use, useState, useEffect, useMemo, useRef } from "react";
-import { notFound } from "next/navigation";
+import { notFound, useRouter } from "next/navigation";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import { getBasketById } from "@/lib/baskets/config";
 import { SwapPanel } from "@/components/swap/SwapPanel";
 import { PerformanceChart } from "@/components/charts/PerformanceChart";
 import { usePrices } from "@/hooks/usePrices";
-import { getCustomWeights, getPurchaseRecords, savePurchaseRecord } from "@/lib/portfolio/history";
+import {
+  getCustomWeights,
+  getPurchaseRecords,
+  savePurchaseRecord,
+  getVisibleSwapSignatures,
+  PURCHASE_SAVED_EVENT,
+} from "@/lib/portfolio/history";
 import { WeightMode, PurchaseRecord, BasketConfig } from "@/lib/baskets/types";
-import { getSwapPreview, executeBasketBuy } from "@/lib/swap/swapExecutor";
+import { getSwapPreview, executeBasketBuy, SwapPreview } from "@/lib/swap/swapExecutor";
 import { DEFAULT_SLIPPAGE_BPS, USDC_MINT } from "@/lib/constants";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
-/** Per-basket hardcoded custom weight defaults — used for init and "Reset to Default" */
+/** Per-basket hardcoded custom weight defaults ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â used for init and "Reset to Default" */
 function getDefaultCustomWeights(basketId: string | undefined): Record<string, number> | null {
   if (basketId === "blue-chip") {
     return {
@@ -50,6 +56,10 @@ async function fetchMarketCapWeights(
 // Pie chart colors matching the allocation bar palette
 const PIE_COLORS = ["#10b981", "#4ade80", "#14b8a6", "#84cc16", "#0891b2"];
 
+// Progressive loading defaults for basket detail page
+const CHART_DEFER_MS = 250;
+const INVEST_PANEL_DEFER_MS = 200;
+
 function PieChart({
   allocations,
   weights,
@@ -65,7 +75,7 @@ function PieChart({
   const hoverRadius = 78;
   const innerRadius = 42;
 
-  // Memoized — only recomputed when allocations or weights change, not on hover
+  // Memoized ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â only recomputed when allocations or weights change, not on hover
   const sorted = useMemo(
     () => [...allocations].sort((a, b) => (weights?.[b.mint] ?? b.weight) - (weights?.[a.mint] ?? a.weight)),
     [allocations, weights]
@@ -142,7 +152,7 @@ function PieChart({
         )}
       </div>
 
-      {/* Legend — right aligned */}
+      {/* Legend ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â right aligned */}
       <div className="space-y-2">
         {sorted.map((alloc, i) => {
           const w = weights?.[alloc.mint] ?? alloc.weight;
@@ -170,7 +180,7 @@ function PieChart({
   );
 }
 
-// ── Transaction History ─────────────────────────────────────────────
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Transaction History ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
 function formatDate(timestamp: number) {
   return new Date(timestamp).toLocaleString(undefined, {
@@ -195,6 +205,7 @@ function TxHistory({
   basket: BasketConfig;
   prices: Record<string, number>;
 }) {
+  const router = useRouter();
   const wallet = useWallet();
   const { connection } = useConnection();
 
@@ -203,7 +214,10 @@ function TxHistory({
   const [redoRecord, setRedoRecord] = useState<PurchaseRecord | null>(null);
   const [redoStatus, setRedoStatus] = useState<RedoStatus>("idle");
   const [redoError, setRedoError] = useState<string | null>(null);
-  const rebuyInFlight = useRef(false); // sync guard — prevents double-trigger before re-render
+  const [redoPreview, setRedoPreview] = useState<SwapPreview | null>(null);
+  const [redoPreviewLoading, setRedoPreviewLoading] = useState(false);
+  const [redoPreviewError, setRedoPreviewError] = useState<string | null>(null);
+  const rebuyInFlight = useRef(false); // sync guard - prevents double-trigger before re-render
 
   const loadRecords = (pubkey: string) => {
     const all = getPurchaseRecords(pubkey);
@@ -213,6 +227,19 @@ function TxHistory({
   useEffect(() => {
     if (!walletPubkey) { setRecords([]); return; }
     setRecords(loadRecords(walletPubkey));
+  }, [walletPubkey, basketId]);
+
+  useEffect(() => {
+    if (!walletPubkey) return;
+    const onPurchaseSaved = (event: Event) => {
+      const detail = (event as CustomEvent<{ walletPubkey?: string; basketId?: string }>).detail;
+      if (!detail) return;
+      if (detail.walletPubkey !== walletPubkey) return;
+      if (detail.basketId !== basketId) return;
+      setRecords(loadRecords(walletPubkey));
+    };
+    window.addEventListener(PURCHASE_SAVED_EVENT, onPurchaseSaved);
+    return () => window.removeEventListener(PURCHASE_SAVED_EVENT, onPurchaseSaved);
   }, [walletPubkey, basketId]);
 
   const toggleExpand = (id: string) =>
@@ -232,7 +259,48 @@ function TxHistory({
     setRedoRecord(null);
     setRedoStatus("idle");
     setRedoError(null);
+    setRedoPreview(null);
+    setRedoPreviewLoading(false);
+    setRedoPreviewError(null);
   };
+
+  useEffect(() => {
+    if (!redoRecord) {
+      setRedoPreview(null);
+      setRedoPreviewLoading(false);
+      setRedoPreviewError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setRedoPreviewLoading(true);
+    setRedoPreviewError(null);
+
+    void getSwapPreview(
+      basket,
+      redoRecord.usdcInvested,
+      redoRecord.weights,
+      DEFAULT_SLIPPAGE_BPS,
+      USDC_MINT
+    )
+      .then((preview) => {
+        if (cancelled) return;
+        setRedoPreview(preview);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setRedoPreview(null);
+        setRedoPreviewError(err instanceof Error ? err.message : "Failed to fetch estimated output");
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setRedoPreviewLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [redoRecord, basket]);
 
   const handleRebuy = async () => {
     if (rebuyInFlight.current) return;
@@ -241,13 +309,15 @@ function TxHistory({
     setRedoStatus("quoting");
     setRedoError(null);
     try {
-      const preview = await getSwapPreview(
-        basket,
-        redoRecord.usdcInvested,
-        redoRecord.weights,
-        DEFAULT_SLIPPAGE_BPS,
-        USDC_MINT
-      );
+      const preview =
+        redoPreview ??
+        (await getSwapPreview(
+          basket,
+          redoRecord.usdcInvested,
+          redoRecord.weights,
+          DEFAULT_SLIPPAGE_BPS,
+          USDC_MINT
+        ));
       setRedoStatus("signing");
       const result = await executeBasketBuy(
         connection,
@@ -270,12 +340,14 @@ function TxHistory({
             priceAtPurchase: prices[a.mint] ?? 0,
           })),
           bundleId: result.bundleId || "",
-          txSignatures: result.txSignatures || [],
+          txSignatures: getVisibleSwapSignatures({
+            txSignatures: result.txSignatures || [],
+            allocations: preview.allocations,
+          }),
         });
         setRedoStatus("success");
-        // Refresh list then close after brief success flash
+        // Refresh local history immediately for the current wallet.
         setRecords(loadRecords(wallet.publicKey.toString()));
-        setTimeout(closeRedo, 1500);
       } else {
         setRedoStatus("error");
         setRedoError(result.error || "Transaction failed");
@@ -337,7 +409,7 @@ function TxHistory({
                           <p className="text-xs text-muted-foreground">{formatDate(rec.timestamp)}</p>
                         </div>
                       </div>
-                      {/* Redo button — stops row toggle */}
+                      {/* Redo button ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â stops row toggle */}
                       <button
                         onClick={(e) => { e.stopPropagation(); openRedo(rec); }}
                         className="flex-shrink-0 text-xs px-3 py-1 rounded-md bg-primary/10 text-primary hover:bg-primary/20 active:scale-[0.97] active:brightness-90 transition-all font-medium"
@@ -356,13 +428,16 @@ function TxHistory({
                               <span className="text-muted-foreground">{t.symbol}</span>
                               <div className="text-right">
                                 <span className="font-mono">
-                                  {(t.ratio * 100).toFixed(1)}%
+                                  {(t.ratio * 100).toFixed(1)}% (${(rec.usdcInvested * t.ratio).toLocaleString(undefined, {
+                                    minimumFractionDigits: 2,
+                                    maximumFractionDigits: 2,
+                                  })})
                                 </span>
-                                {t.priceAtPurchase > 0 && (
+                                {t.priceAtPurchase > 0 ? (
                                   <span className="text-xs text-muted-foreground ml-2">
                                     @ ${t.priceAtPurchase.toLocaleString(undefined, { maximumFractionDigits: 4 })}
                                   </span>
-                                )}
+                                ) : null}
                               </div>
                             </div>
                           ))}
@@ -375,22 +450,22 @@ function TxHistory({
                               target="_blank" rel="noopener noreferrer"
                               className="text-xs font-mono text-primary hover:underline break-all"
                             >
-                              {rec.bundleId.slice(0, 24)}…
+                              {rec.bundleId.slice(0, 24)}...
                             </a>
                           </div>
                         )}
-                        {rec.txSignatures && rec.txSignatures.length > 1 && (
+                        {getVisibleSwapSignatures(rec).length > 0 && (
                           <div className="space-y-1">
                             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Transactions</p>
                             <div className="flex flex-wrap gap-2">
-                              {rec.txSignatures.slice(1).map((sig, i) => (
+                              {getVisibleSwapSignatures(rec).map((sig, i) => (
                                 <a
                                   key={sig}
                                   href={`https://solscan.io/tx/${sig}`}
                                   target="_blank" rel="noopener noreferrer"
                                   className="text-xs font-mono text-primary hover:underline"
                                 >
-                                  Txn {i + 1} ↗
+                                  Swap {i + 1} (view)
                                 </a>
                               ))}
                             </div>
@@ -409,80 +484,166 @@ function TxHistory({
       {/* Rebuy modal */}
       {redoRecord && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
-          <div className="relative w-full max-w-sm rounded-xl border border-primary/20 bg-card p-6 shadow-xl mx-4">
+          <div className="relative w-full max-w-md rounded-xl border border-primary/20 bg-card p-6 shadow-xl mx-4">
             <button
               onClick={closeRedo}
               className="absolute top-3 right-3 text-muted-foreground hover:text-foreground active:scale-[0.97] active:brightness-90 transition-all cursor-pointer text-lg leading-none"
             >
-              ✕
+              x
             </button>
 
-            <h4 className="text-base font-semibold mb-1">Repeat investment</h4>
-            <p className="text-xs text-muted-foreground mb-4">
-              Reinvest the same amount with the same weights as this transaction.
-            </p>
-
-            {/* Details */}
-            <div className="space-y-2 text-sm mb-4">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Amount</span>
-                <span className="font-mono font-medium">
-                  ${redoRecord.usdcInvested.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDC
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Original date</span>
-                <span className="text-xs font-mono">{formatDate(redoRecord.timestamp)}</span>
-              </div>
-            </div>
-
-            {/* Weights */}
-            <div className="mb-4">
-              <p className="text-xs text-muted-foreground mb-1">Weights</p>
-              <div className="grid grid-cols-2 gap-1 text-xs">
-                {Object.entries(redoRecord.weights).map(([mint, w]) => {
-                  const alloc = basket.allocations.find((a) => a.mint === mint);
-                  if (!alloc) return null;
-                  return (
-                    <div key={mint} className="flex items-center justify-between">
-                      <span className="text-muted-foreground">{alloc.symbol}</span>
-                      <span className="font-mono">{w}%</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {redoError && (
-              <p className="text-xs text-destructive mb-3">{redoError}</p>
-            )}
-
             {redoStatus === "success" ? (
-              <p className="text-sm text-primary font-medium text-center py-2">✓ Investment successful!</p>
+              <div className="py-10 text-center space-y-3">
+                <p className="text-3xl font-semibold text-primary">Investment successful</p>
+                <p className="text-sm text-muted-foreground">You may close the window.</p>
+                <button
+                  type="button"
+                  className="mt-6 w-full rounded-md bg-[#00C48C] text-black py-2.5 text-sm font-medium hover:opacity-90 active:scale-[0.97] active:brightness-90 transition-all cursor-pointer"
+                  onClick={() => {
+                    closeRedo();
+                    router.push("/dashboard");
+                  }}
+                >
+                  Go to history
+                </button>
+              </div>
             ) : (
-              <button
-                onClick={handleRebuy}
-                disabled={
-                  !wallet.publicKey ||
-                  !wallet.signAllTransactions ||
-                  redoStatus === "quoting" ||
-                  redoStatus === "signing" ||
-                  redoStatus === "submitting"
-                }
-                className="w-full rounded-md bg-primary text-primary-foreground py-2 text-sm font-medium hover:bg-primary/90 active:scale-[0.97] active:brightness-90 transition-all disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
-              >
-                {redoStatus === "quoting"
-                  ? "Getting quote..."
-                  : redoStatus === "signing"
-                  ? "Sign transactions..."
-                  : redoStatus === "submitting"
-                  ? "Submitting..."
-                  : "Rebuy"}
-              </button>
+              <>
+                <h4 className="text-lg font-semibold mb-2">Repeat investment</h4>
+                <p className="text-xs text-muted-foreground mb-4">
+                  Reinvest the same amount with the same weights as this transaction.
+                </p>
+
+                <div className="space-y-2 text-sm mb-4">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Amount</span>
+                    <span className="font-mono font-medium">
+                      ${redoRecord.usdcInvested.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDC
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Original date</span>
+                    <span className="text-xs font-mono">{formatDate(redoRecord.timestamp)}</span>
+                  </div>
+                </div>
+
+                <div className="mb-4">
+                  <p className="text-xs text-muted-foreground mb-1">Weights</p>
+                  <div className="grid grid-cols-2 gap-1 text-xs">
+                    {Object.entries(redoRecord.weights).map(([mint, w]) => {
+                      const alloc = basket.allocations.find((a) => a.mint === mint);
+                      if (!alloc) return null;
+                      return (
+                        <div key={mint} className="flex items-center justify-between">
+                          <span className="text-muted-foreground">{alloc.symbol}</span>
+                          <span className="font-mono">{w}%</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="mb-4">
+                  <span className="text-xs text-muted-foreground">Estimated output</span>
+                  <div className="mt-1 space-y-1 text-xs">
+                    {redoPreviewLoading && (
+                      <p className="text-muted-foreground">Loading estimates...</p>
+                    )}
+                    {redoPreviewError && (
+                      <p className="text-destructive">{redoPreviewError}</p>
+                    )}
+                    {!redoPreviewLoading &&
+                      !redoPreviewError &&
+                      redoPreview &&
+                      redoPreview.allocations.map((alloc) => {
+                        const token = basket.allocations.find((a) => a.mint === alloc.mint);
+                        const decimals = token?.decimals ?? 6;
+                        const outputNum = parseFloat(alloc.estimatedOutput) / 10 ** decimals;
+                        return (
+                          <div key={alloc.mint} className="flex items-center justify-between">
+                            <span className="text-muted-foreground">
+                              {alloc.inputAmount.toFixed(2)} USDC{" -> "}{alloc.symbol}
+                            </span>
+                            <span className="font-mono">
+                              {Number.isFinite(outputNum)
+                                ? outputNum.toLocaleString(undefined, { maximumFractionDigits: 6 })
+                                : "-"}
+                            </span>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+
+                {redoError && (
+                  <p className="text-xs text-destructive mb-3">{redoError}</p>
+                )}
+
+                <div className="mt-4 flex flex-col sm:flex-row gap-2">
+                  <button
+                    onClick={handleRebuy}
+                    disabled={
+                      !wallet.publicKey ||
+                      !wallet.signAllTransactions ||
+                      redoStatus === "quoting" ||
+                      redoStatus === "signing" ||
+                      redoStatus === "submitting"
+                    }
+                    className="flex-1 rounded-md bg-[#00C48C] text-black py-2 text-sm font-medium hover:opacity-90 active:scale-[0.97] active:brightness-90 transition-all disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {redoStatus === "quoting" ||
+                    redoStatus === "signing" ||
+                    redoStatus === "submitting" ? (
+                      <span className="inline-flex items-center gap-2">
+                        <svg
+                          className="h-4 w-4 animate-spin"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          aria-hidden="true"
+                        >
+                          <circle
+                            cx="12"
+                            cy="12"
+                            r="10"
+                            stroke="currentColor"
+                            strokeOpacity="0.25"
+                            strokeWidth="3"
+                          />
+                          <path
+                            d="M22 12a10 10 0 0 0-10-10"
+                            stroke="currentColor"
+                            strokeWidth="3"
+                            strokeLinecap="round"
+                          />
+                        </svg>
+                        {redoStatus === "quoting"
+                          ? "Preparing quote..."
+                          : redoStatus === "signing"
+                          ? "Signing transactions..."
+                          : "Submitting..."}
+                      </span>
+                    ) : (
+                      "Confirm and invest"
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="flex-1 rounded-md border border-primary/40 text-primary py-2 text-sm font-medium hover:bg-primary/10 active:scale-[0.97] active:brightness-90 transition-all cursor-pointer"
+                    onClick={() => {
+                      closeRedo();
+                      router.push(`/basket/${basket.id}`);
+                    }}
+                  >
+                    Go to basket
+                  </button>
+                </div>
+              </>
             )}
           </div>
         </div>
       )}
+
     </>
   );
 }
@@ -494,7 +655,11 @@ export default function BasketPage({
 }) {
   const { id } = use(params);
   const basket = getBasketById(id);
-  const { prices } = usePrices();
+  const [isChartReady, setIsChartReady] = useState(false);
+  const [isInvestPanelReady, setIsInvestPanelReady] = useState(false);
+  const { prices } = usePrices({
+    paused: !isInvestPanelReady,
+  });
   const wallet = useWallet();
 
   const [weightMode, setWeightMode] = useState<WeightMode>(basket?.defaultWeightMode ?? "equal");
@@ -510,6 +675,15 @@ export default function BasketPage({
   const [liveMarketCapWeights, setLiveMarketCapWeights] = useState<Record<string, number> | null>(null);
 
   useEffect(() => {
+    const chartTimer = setTimeout(() => setIsChartReady(true), CHART_DEFER_MS);
+    const investTimer = setTimeout(() => setIsInvestPanelReady(true), INVEST_PANEL_DEFER_MS);
+    return () => {
+      clearTimeout(chartTimer);
+      clearTimeout(investTimer);
+    };
+  }, [id]);
+
+  useEffect(() => {
     if (wallet.publicKey && basket) {
       const saved = getCustomWeights(wallet.publicKey.toString(), id);
       if (saved) setCustomWeights(saved);
@@ -518,11 +692,13 @@ export default function BasketPage({
 
   // Fetch live market cap weights
   useEffect(() => {
-    if (!basket) return;
+    if (!basket || weightMode !== "marketcap" || liveMarketCapWeights) return;
+    let cancelled = false;
     fetchMarketCapWeights(basket.allocations).then((w) => {
-      if (Object.keys(w).length > 0) setLiveMarketCapWeights(w);
+      if (!cancelled && Object.keys(w).length > 0) setLiveMarketCapWeights(w);
     });
-  }, [basket?.id]);
+    return () => { cancelled = true; };
+  }, [basket?.id, weightMode, liveMarketCapWeights]);
 
   // Resolve active weights based on selected mode
   const activeWeights = useMemo((): Record<string, number> => {
@@ -533,7 +709,7 @@ export default function BasketPage({
     if (weightMode === "equal") {
       return Object.fromEntries(basket.allocations.map((a) => [a.mint, a.weight]));
     }
-    // custom — fall back to basket's default custom weights, then equal weights
+    // custom ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â fall back to basket's default custom weights, then equal weights
     return customWeights ?? defaultCustomWeights ?? Object.fromEntries(basket.allocations.map((a) => [a.mint, a.weight]));
   }, [weightMode, liveMarketCapWeights, customWeights, defaultCustomWeights, basket]);
 
@@ -571,7 +747,11 @@ export default function BasketPage({
             <CardTitle className="text-lg">Historical Performance</CardTitle>
           </CardHeader>
           <CardContent>
-            <PerformanceChart basket={basket} weights={activeWeights} />
+            {isChartReady ? (
+              <PerformanceChart basket={basket} weights={activeWeights} />
+            ) : (
+              <div className="h-56 rounded-lg border border-primary/10 bg-primary/5 animate-pulse" />
+            )}
           </CardContent>
         </Card>
 
@@ -584,9 +764,12 @@ export default function BasketPage({
         />
       </div>
 
-      {/* Right column: Constituents pie + Invest — merged into one card */}
+      {/* Right column: Constituents pie + Invest ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â merged into one card */}
       <div>
-        <Card className="sticky top-24 border-primary/10 bg-card">
+        <Card
+          className="sticky top-24 border-primary/10 bg-card"
+          onMouseEnter={() => setIsInvestPanelReady(true)}
+        >
           <CardHeader className="pb-3">
             <CardTitle>Invest in {basket.name}</CardTitle>
           </CardHeader>
@@ -610,7 +793,7 @@ export default function BasketPage({
                       <span className="font-mono">
                         {price
                           ? `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: price < 1 ? 6 : 2 })}`
-                          : "—"}
+                          : "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â"}
                       </span>
                     </div>
                   );
@@ -622,19 +805,29 @@ export default function BasketPage({
             <div className="border-t border-primary/10" />
 
             {/* Invest Panel */}
-            <SwapPanel
-              basket={basket}
-              marketCapWeights={liveMarketCapWeights}
-              defaultMode={basket.defaultWeightMode}
-              weightMode={weightMode}
-              onWeightModeChange={setWeightMode}
-              customWeights={customWeights}
-              onWeightsChange={setCustomWeights}
-              defaultCustomWeights={defaultCustomWeights}
-            />
+            {isInvestPanelReady ? (
+              <SwapPanel
+                basket={basket}
+                marketCapWeights={liveMarketCapWeights}
+                defaultMode={basket.defaultWeightMode}
+                weightMode={weightMode}
+                onWeightModeChange={setWeightMode}
+                customWeights={customWeights}
+                onWeightsChange={setCustomWeights}
+                defaultCustomWeights={defaultCustomWeights}
+              />
+            ) : (
+              <div className="space-y-3">
+                <div className="h-10 rounded-md border border-primary/10 bg-primary/5 animate-pulse" />
+                <div className="h-10 rounded-md border border-primary/10 bg-primary/5 animate-pulse" />
+                <div className="h-10 rounded-md border border-primary/10 bg-primary/5 animate-pulse" />
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
     </div>
   );
 }
+
+

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { redeemCode } from "@/lib/access/store";
+import { enforceRateLimit } from "@/lib/server/security";
 
 export const runtime = "nodejs";
 
@@ -12,6 +13,8 @@ function extractIp(request: NextRequest): string {
 }
 
 export async function POST(request: NextRequest) {
+  const rateLimited = enforceRateLimit(request, "api:access:redeem", 5, 60_000);
+  if (rateLimited) return rateLimited;
   try {
     const body = (await request.json()) as { code?: string; fingerprint?: string };
     const code = body?.code?.trim();

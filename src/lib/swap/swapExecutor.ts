@@ -27,8 +27,6 @@ import { getQuote, getMultipleQuotes, getSwapInstructions, JupiterQuoteResponse 
 import {
   buildSwapTransaction,
   buildJitoTipTransaction,
-  submitJitoBundle,
-  pollBundleStatus,
 } from "./bundleBuilder";
 
 export interface SwapPreview {
@@ -66,7 +64,8 @@ export async function getSwapPreview(
   inputAmount: number,
   customWeights: Record<string, number> | null,
   slippageBps: number = DEFAULT_SLIPPAGE_BPS,
-  inputMint: string = USDC_MINT
+  inputMint: string = USDC_MINT,
+  signal?: AbortSignal
 ): Promise<SwapPreview> {
   const weights = customWeights || Object.fromEntries(
     basket.allocations.map((a) => [a.mint, a.weight])
@@ -97,7 +96,7 @@ export async function getSwapPreview(
   );
 
   // No platformFeeBps in Jupiter quote — we handle fees ourselves
-  const quotes = await getMultipleQuotes(toQuote, inputMint, slippageBps);
+  const quotes = await getMultipleQuotes(toQuote, inputMint, slippageBps, signal);
 
   const quoteByMint = new Map<string, JupiterQuoteResponse>();
   for (let i = 0; i < toQuote.length; i++) {
@@ -230,6 +229,55 @@ function isUserRejection(err: unknown): boolean {
   );
 }
 
+function isBlockhashExpiryError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return msg.includes("block height exceeded") || msg.includes("has expired");
+}
+
+function extractSignatureFromError(err: unknown): string | null {
+  const msg = err instanceof Error ? err.message : String(err);
+  const match = msg.match(/\b[1-9A-HJ-NP-Za-km-z]{80,90}\b/);
+  return match?.[0] ?? null;
+}
+
+function normalizeSignature(signature: string | null | undefined): string | null {
+  const trimmed = (signature ?? "").trim();
+  if (!trimmed) return null;
+  return /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(trimmed) ? trimmed : null;
+}
+
+async function confirmByPolling(
+  connection: Connection,
+  signature: string,
+  timeoutMs: number = 45_000
+): Promise<void> {
+  const normalizedSig = normalizeSignature(signature);
+  if (!normalizedSig) {
+    throw new Error("Invalid transaction signature format");
+  }
+
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const statuses = await connection.getSignatureStatuses(
+      [normalizedSig],
+      { searchTransactionHistory: true }
+    );
+    const status = statuses.value[0];
+    if (status?.err) {
+      throw new Error(JSON.stringify(status.err));
+    }
+    if (
+      status &&
+      (status.confirmationStatus === "confirmed" ||
+        status.confirmationStatus === "finalized")
+    ) {
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 1200));
+  }
+  throw new Error("Confirmation timeout");
+}
+
 export async function executeBasketBuy(
   connection: Connection,
   wallet: {
@@ -255,7 +303,7 @@ export async function executeBasketBuy(
 
     // === Attempt 1: RPC Send (fast, single sign) ===
     try {
-      const { allTxs: rpcTxs, blockhash, lastValidBlockHeight } =
+      const { allTxs: rpcTxs } =
         await buildAllTransactions(
           connection,
           swapInstructionSets,
@@ -269,67 +317,53 @@ export async function executeBasketBuy(
       const txSignatures: string[] = [];
 
       for (const tx of signedRpcTxs) {
-        const sig = await connection.sendRawTransaction(tx.serialize(), {
-          skipPreflight: false,
-          maxRetries: 3,
-        });
-        txSignatures.push(sig);
+        try {
+          const sig = await connection.sendRawTransaction(tx.serialize(), {
+            skipPreflight: false,
+            maxRetries: 3,
+          });
+          const normalizedSig = normalizeSignature(sig);
+          if (!normalizedSig) {
+            throw new Error("RPC returned invalid transaction signature format");
+          }
+          txSignatures.push(normalizedSig);
+        } catch (sendErr) {
+          if (isBlockhashExpiryError(sendErr)) {
+            const maybeSig = normalizeSignature(extractSignatureFromError(sendErr));
+            if (maybeSig) {
+              try {
+                await confirmByPolling(connection, maybeSig, 8_000);
+                txSignatures.push(maybeSig);
+                continue;
+              } catch {
+                // Fall through to hard failure if status is not found/confirmed.
+              }
+            }
+          }
+          throw sendErr;
+        }
       }
 
-      // Confirm all transactions concurrently (swaps are independent)
-      const confirmations = await Promise.all(
-        txSignatures.map((sig) =>
-          connection.confirmTransaction(
-            { signature: sig, blockhash, lastValidBlockHeight },
-            "confirmed"
-          )
-        )
-      );
-      const failedIdx = confirmations.findIndex((c) => c.value.err);
-      if (failedIdx !== -1) {
-        throw new Error(
-          `Transaction ${failedIdx + 1} failed: ${JSON.stringify(confirmations[failedIdx].value.err)}`
-        );
+      // HTTP polling avoids websocket flakiness in proxied RPC setups.
+      for (let i = 0; i < txSignatures.length; i++) {
+        try {
+          await confirmByPolling(connection, txSignatures[i]);
+        } catch (confirmErr) {
+          throw new Error(
+            `Transaction ${i + 1} failed: ${
+              confirmErr instanceof Error ? confirmErr.message : String(confirmErr)
+            }`
+          );
+        }
       }
 
       return { success: true, txSignatures };
     } catch (rpcError) {
-      if (isUserRejection(rpcError)) throw rpcError; // user cancelled — don't prompt again via Jito
-      console.warn(
-        "RPC send failed, falling back to Jito bundle:",
-        rpcError instanceof Error ? rpcError.message : rpcError
-      );
-    }
-
-    // === Attempt 2: Jito Bundle fallback (atomic, fresh blockhash + re-sign) ===
-    try {
-      const { allTxs } = await buildAllTransactions(
-        connection,
-        swapInstructionSets,
-        wallet.publicKey,
-        feeAmount,
-        true,
-        inputMint
-      );
-
-      const signedTxs = await wallet.signAllTransactions(allTxs);
-      const { bundleId, endpoint } = await submitJitoBundle(signedTxs);
-      const result = await pollBundleStatus(bundleId, endpoint);
-
-      if (result.status === "landed") {
-        return { success: true, bundleId, slot: result.slot };
-      }
-
+      if (isUserRejection(rpcError)) throw rpcError;
       return {
         success: false,
-        bundleId,
-        error: "Both RPC and Jito bundle failed. Please try again.",
-      };
-    } catch (jitoError) {
-      return {
-        success: false,
-        error: `Both RPC and Jito failed. Last error: ${
-          jitoError instanceof Error ? jitoError.message : "Unknown error"
+        error: `RPC failed. Last error: ${
+          rpcError instanceof Error ? rpcError.message : "Unknown error"
         }`,
       };
     }
@@ -386,66 +420,60 @@ export async function executeBasketSell(
 
     // === Attempt 1: RPC Send (fast, single sign) ===
     try {
-      const { allTxs: rpcTxs, blockhash, lastValidBlockHeight } =
+      const { allTxs: rpcTxs } =
         await buildSellTransactions(false);
 
       const signedRpcTxs = await wallet.signAllTransactions(rpcTxs);
       const txSignatures: string[] = [];
 
       for (const tx of signedRpcTxs) {
-        const sig = await connection.sendRawTransaction(tx.serialize(), {
-          skipPreflight: false,
-          maxRetries: 3,
-        });
-        txSignatures.push(sig);
+        try {
+          const sig = await connection.sendRawTransaction(tx.serialize(), {
+            skipPreflight: false,
+            maxRetries: 3,
+          });
+          const normalizedSig = normalizeSignature(sig);
+          if (!normalizedSig) {
+            throw new Error("RPC returned invalid transaction signature format");
+          }
+          txSignatures.push(normalizedSig);
+        } catch (sendErr) {
+          if (isBlockhashExpiryError(sendErr)) {
+            const maybeSig = normalizeSignature(extractSignatureFromError(sendErr));
+            if (maybeSig) {
+              try {
+                await confirmByPolling(connection, maybeSig, 8_000);
+                txSignatures.push(maybeSig);
+                continue;
+              } catch {
+                // Fall through to hard failure if status is not found/confirmed.
+              }
+            }
+          }
+          throw sendErr;
+        }
       }
 
-      // Confirm all transactions concurrently (swaps are independent)
-      const confirmations = await Promise.all(
-        txSignatures.map((sig) =>
-          connection.confirmTransaction(
-            { signature: sig, blockhash, lastValidBlockHeight },
-            "confirmed"
-          )
-        )
-      );
-      const failedIdx = confirmations.findIndex((c) => c.value.err);
-      if (failedIdx !== -1) {
-        throw new Error(
-          `Transaction ${failedIdx + 1} failed: ${JSON.stringify(confirmations[failedIdx].value.err)}`
-        );
+      // HTTP polling avoids websocket flakiness in proxied RPC setups.
+      for (let i = 0; i < txSignatures.length; i++) {
+        try {
+          await confirmByPolling(connection, txSignatures[i]);
+        } catch (confirmErr) {
+          throw new Error(
+            `Transaction ${i + 1} failed: ${
+              confirmErr instanceof Error ? confirmErr.message : String(confirmErr)
+            }`
+          );
+        }
       }
 
       return { success: true, txSignatures };
     } catch (rpcError) {
-      if (isUserRejection(rpcError)) throw rpcError; // user cancelled — don't prompt again via Jito
-      console.warn(
-        "RPC send failed, falling back to Jito bundle:",
-        rpcError instanceof Error ? rpcError.message : rpcError
-      );
-    }
-
-    // === Attempt 2: Jito Bundle fallback (atomic, fresh blockhash + re-sign) ===
-    try {
-      const { allTxs } = await buildSellTransactions(true);
-      const signedTxs = await wallet.signAllTransactions(allTxs);
-      const { bundleId, endpoint } = await submitJitoBundle(signedTxs);
-      const result = await pollBundleStatus(bundleId, endpoint);
-
-      if (result.status === "landed") {
-        return { success: true, bundleId, slot: result.slot };
-      }
-
+      if (isUserRejection(rpcError)) throw rpcError;
       return {
         success: false,
-        bundleId,
-        error: "Both RPC and Jito bundle failed. Please try again.",
-      };
-    } catch (jitoError) {
-      return {
-        success: false,
-        error: `Both RPC and Jito failed. Last error: ${
-          jitoError instanceof Error ? jitoError.message : "Unknown error"
+        error: `RPC failed. Last error: ${
+          rpcError instanceof Error ? rpcError.message : "Unknown error"
         }`,
       };
     }

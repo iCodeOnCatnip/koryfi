@@ -39,7 +39,8 @@ export async function getQuote(
   inputMint: string,
   outputMint: string,
   amount: string,
-  slippageBps: number
+  slippageBps: number,
+  signal?: AbortSignal
 ): Promise<JupiterQuoteResponse> {
   const params = new URLSearchParams({
     inputMint,
@@ -56,6 +57,7 @@ export async function getQuote(
       headers: {
         ...(withKey && JUPITER_API_KEY ? { "x-api-key": JUPITER_API_KEY } : {}),
       },
+      signal,
     });
 
   let response = await requestQuote(true);
@@ -119,7 +121,8 @@ export async function getSwapInstructions(
 export async function getMultipleQuotes(
   allocations: { outputMint: string; usdcAmount: bigint }[],
   inputMint: string,
-  slippageBps: number
+  slippageBps: number,
+  signal?: AbortSignal
 ): Promise<JupiterQuoteResponse[]> {
   const quotes = await Promise.all(
     allocations.map((alloc) =>
@@ -127,7 +130,8 @@ export async function getMultipleQuotes(
         inputMint,
         alloc.outputMint,
         alloc.usdcAmount.toString(),
-        slippageBps
+        slippageBps,
+        signal
       )
     )
   );

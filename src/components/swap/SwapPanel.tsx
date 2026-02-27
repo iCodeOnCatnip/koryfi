@@ -8,7 +8,12 @@ import { BasketConfig, WeightMode } from "@/lib/baskets/types";
 import { useSwapPreview } from "@/hooks/useSwapPreview";
 import { executeBasketBuy } from "@/lib/swap/swapExecutor";
 import { USDC_MINT, USDT_MINT, WSOL_MINT } from "@/lib/constants";
-import { savePurchaseRecord, saveCustomWeights, clearCustomWeights } from "@/lib/portfolio/history";
+import {
+  savePurchaseRecord,
+  saveCustomWeights,
+  clearCustomWeights,
+  getVisibleSwapSignatures,
+} from "@/lib/portfolio/history";
 import { usePrices } from "@/hooks/usePrices";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -55,7 +60,8 @@ export function SwapPanel({
   const { connection } = useConnection();
   const wallet = useWallet();
   const { setVisible } = useWalletModal();
-  const { prices } = usePrices();
+  const [postRejectRefreshKey, setPostRejectRefreshKey] = useState(0);
+  const [rejectPollingBlocked, setRejectPollingBlocked] = useState(false);
 
   const [amountInput, setAmountInput] = useState("");
   const [inputAsset, setInputAsset] = useState<InputAssetKey>("USDC");
@@ -87,6 +93,10 @@ export function SwapPanel({
 
   const amount = parseFloat(amountInput) || 0;
   const isBusy = status === "signing" || status === "submitting";
+  const lockAmountControls = status === "submitting" || status === "success";
+  const quoteEnabled = !isBusy && !rejectPollingBlocked;
+  const shouldContinuouslyPoll = status === "idle" && amount > 0 && !rejectPollingBlocked;
+  const { prices, refetch: refetchPrices } = usePrices({ paused: isBusy });
 
   // Resolve mint for selected input asset
   const inputMint =
@@ -97,10 +107,51 @@ export function SwapPanel({
     amount,
     activeWeights,
     undefined,
-    inputMint
+    inputMint,
+    postRejectRefreshKey,
+    quoteEnabled,
+    shouldContinuouslyPoll ? 4000 : 0
   );
 
   const canInvest = amount > 0 && !previewLoading && !!preview && !isBusy;
+
+  const isLikelyUserRejection = useCallback((msg?: string | null): boolean => {
+    const text = (msg ?? "").toLowerCase();
+    return (
+      text.includes("user rejected") ||
+      text.includes("user denied") ||
+      text.includes("rejected the request") ||
+      text.includes("cancelled") ||
+      text.includes("canceled")
+    );
+  }, []);
+
+  // If user rejects signing, stop polling until user explicitly presses Try Again.
+  useEffect(() => {
+    if (status !== "error") return;
+    if (!isLikelyUserRejection(errorMsg)) return;
+    setRejectPollingBlocked(true);
+  }, [status, errorMsg, isLikelyUserRejection]);
+
+  // After successful confirm, do a single delayed refresh (+4s), then remain paused
+  // until user changes input, refreshes, or refocuses.
+  useEffect(() => {
+    if (status !== "success") return;
+    const timer = setTimeout(() => {
+      setPostRejectRefreshKey((k) => k + 1);
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [status]);
+
+  // Refocus-triggered refresh while not busy and not reject-blocked.
+  useEffect(() => {
+    const onFocus = () => {
+      if (amount <= 0 || isBusy || rejectPollingBlocked) return;
+      setPostRejectRefreshKey((k) => k + 1);
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [amount, isBusy, rejectPollingBlocked]);
 
   // Fetch balance for selected asset
   useEffect(() => {
@@ -156,6 +207,8 @@ export function SwapPanel({
     });
   }, []);
 
+  const lockedMintsKey = [...lockedMints].sort().join(",");
+
   const updateWeight = useCallback(
     (mint: string, newWeight: number) => {
       const current = customWeights || getEqualWeights(basket);
@@ -177,7 +230,8 @@ export function SwapPanel({
       if (onWeightsChange) onWeightsChange(updated);
       if (wallet.publicKey) saveCustomWeights(wallet.publicKey.toString(), basket.id, updated);
     },
-    [customWeights, basket, wallet.publicKey, onWeightsChange, lockedMints]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [customWeights, basket, wallet.publicKey, onWeightsChange, lockedMintsKey]
   );
 
   const handleEditSubmit = useCallback((mint: string) => {
@@ -228,7 +282,10 @@ export function SwapPanel({
             priceAtPurchase: prices[a.mint] ?? 0,
           })),
           bundleId: result.bundleId || "",
-          txSignatures: result.txSignatures || [],
+          txSignatures: getVisibleSwapSignatures({
+            txSignatures: result.txSignatures || [],
+            allocations: preview.allocations,
+          }),
         });
       } else {
         setStatus("error");
@@ -373,13 +430,16 @@ export function SwapPanel({
           {wallet.publicKey && maxBalance !== null && (
             <button
               type="button"
-              className="text-xs text-primary hover:underline active:scale-[0.97] active:brightness-90 transition-all"
-              onClick={() => {
-                if (maxBalance !== null) {
-                  setAmountInput(maxBalance.toFixed(4));
-                  setStatus("idle");
-                }
-              }}
+              className="text-xs text-primary hover:underline active:scale-[0.97] active:brightness-90 transition-all disabled:opacity-50 disabled:no-underline"
+              disabled={lockAmountControls}
+            onClick={() => {
+              if (maxBalance !== null) {
+                setAmountInput(maxBalance.toFixed(4));
+                setStatus("idle");
+                setRejectPollingBlocked(false);
+                setPostRejectRefreshKey((k) => k + 1);
+              }
+            }}
             >
               Max: {maxBalance.toFixed(2)} {inputAsset}
             </button>
@@ -389,17 +449,19 @@ export function SwapPanel({
           <input
             type="number"
             value={amountInput}
-            onChange={(e) => { setAmountInput(e.target.value); setStatus("idle"); }}
+            onChange={(e) => { setAmountInput(e.target.value); setStatus("idle"); setRejectPollingBlocked(false); }}
             placeholder="0.00"
             min="0"
             step="0.01"
+            disabled={lockAmountControls}
             className="w-full px-4 pr-28 py-3 rounded-lg border border-primary/20 bg-background text-lg font-mono focus:outline-none focus:border-primary"
           />
           {/* Asset dropdown */}
           <button
             type="button"
+            disabled={lockAmountControls}
             onClick={() => setShowAssetMenu((v) => !v)}
-            className="absolute inset-y-1 right-1 px-2 rounded-md flex items-center gap-2 border border-primary/30 bg-black/40 hover:bg-black/60 active:scale-[0.97] active:brightness-90 transition-all text-sm cursor-pointer"
+            className="absolute inset-y-1 right-1 px-2 rounded-md flex items-center gap-2 border border-primary/30 bg-black/40 hover:bg-black/60 active:scale-[0.97] active:brightness-90 transition-all text-sm cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {(() => {
               const current = INPUT_ASSETS.find((a) => a.key === inputAsset)!;
@@ -422,11 +484,15 @@ export function SwapPanel({
                 <button
                   key={asset.key}
                   type="button"
+                  disabled={lockAmountControls}
                   onClick={() => {
                     setInputAsset(asset.key);
+                    setStatus("idle");
+                    setRejectPollingBlocked(false);
+                    setPostRejectRefreshKey((k) => k + 1);
                     setShowAssetMenu(false);
                   }}
-                  className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-sm hover:bg-primary/10 cursor-pointer"
+                  className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-sm hover:bg-primary/10 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <img
                     src={asset.icon}
@@ -490,7 +556,17 @@ export function SwapPanel({
       ) : status === "error" ? (
         <div className="text-center space-y-2">
           <p className="text-destructive text-sm">{errorMsg}</p>
-          <Button variant="outline" onClick={() => setStatus("idle")}>Try Again</Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setStatus("idle");
+              setRejectPollingBlocked(false);
+              void refetchPrices();
+              setPostRejectRefreshKey((k) => k + 1);
+            }}
+          >
+            Try Again
+          </Button>
         </div>
       ) : (
         <Button
@@ -506,7 +582,15 @@ export function SwapPanel({
           {status === "signing"
             ? "Signing transactions..."
             : status === "submitting"
-            ? "Submitting bundle..."
+            ? (
+              <span className="inline-flex items-center gap-2">
+                <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
+                  <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                </svg>
+                Submitting bundle...
+              </span>
+            )
             : `Invest ${amount.toFixed(2)} ${inputAsset}`}
         </Button>
       )}
