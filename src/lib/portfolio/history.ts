@@ -62,7 +62,7 @@ export function savePurchaseRecord(
 // Hide platform-fee transfer tx from user-facing swap history.
 // Old records may still include it at index 0.
 export function getVisibleSwapSignatures(
-  record: Pick<PurchaseRecord, "txSignatures" | "allocations">
+  record: { txSignatures: string[]; allocations: { length: number } }
 ): string[] {
   if (!record.txSignatures?.length) return [];
   const hasFeeAtIndex0 = record.txSignatures.length > record.allocations.length;
